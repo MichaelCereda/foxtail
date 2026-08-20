@@ -12,6 +12,8 @@
 #   foxtail exec <name> cmd…   run cmd with ALL_PROXY pointed at that tailnet
 #   foxtail ssh <name> host    ssh into a node on that tailnet
 #   foxtail rm <name>          stop and delete its state
+#   foxtail enable <name>      start automatically at login (launchd), restart on crash
+#   foxtail disable <name>     stop starting automatically
 #   foxtail doctor             check this machine's setup and daemon health
 #   foxtail selftest           assert foxtail's own helpers still work
 
@@ -69,17 +71,91 @@ freeport() {
 
 account() { ts "$1" status --json 2>/dev/null | jq -r '.User[.Self.UserID|tostring].LoginName // .MagicDNSSuffix // "-"'; }
 
+agents="$HOME/Library/LaunchAgents"
+label()  { printf 'com.foxtail.%s' "$1"; }
+plist()  { printf '%s/com.foxtail.%s.plist' "$agents" "$1"; }
+enabled(){ [ -f "$(plist "$1")" ]; }
+loaded() { launchctl print "gui/$(id -u)/$(label "$1")" >/dev/null 2>&1; }
+
+# launchctl bootstrap/bootout are the modern API; load -w is the fallback for
+# older macOS. Both are tried so this works either way.
+lc_start() {
+  launchctl bootstrap "gui/$(id -u)" "$(plist "$1")" 2>/dev/null ||
+  launchctl load -w "$(plist "$1")" 2>/dev/null ||
+  die "launchctl could not start $(label "$1")"
+}
+lc_stop() {
+  launchctl bootout "gui/$(id -u)/$(label "$1")" 2>/dev/null ||
+  launchctl unload -w "$(plist "$1")" 2>/dev/null || true
+}
+
+cmd_enable() {
+  local n=${1:-}; checkname "$n"
+  need tailscaled "brew install tailscale"
+  local p bin
+  p=$(port "$n") || true
+  [ -n "$p" ] || p=$(freeport)
+  bin=$(command -v tailscaled)
+  mkdir -p "$(dir "$n")" "$agents"
+  chmod 700 "$(dir "$n")"
+  printf '%s' "$p" > "$(dir "$n")/port"
+
+  enabled "$n" && lc_stop "$n"
+  cat > "$(plist "$n")" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$(label "$n")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$bin</string>
+    <string>--tun=userspace-networking</string>
+    <string>--socks5-server=localhost:$p</string>
+    <string>--outbound-http-proxy-listen=localhost:$p</string>
+    <string>--statedir=$(dir "$n")</string>
+    <string>--socket=$(sock "$n")</string>
+    <string>--port=0</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$(dir "$n")/daemon.log</string>
+  <key>StandardErrorPath</key><string>$(dir "$n")/daemon.log</string>
+</dict>
+</plist>
+PLIST
+  # a daemon started by hand would hold the socket and the port
+  running "$n" && ! loaded "$n" && pkill -f -- "--socket=$(sock "$n")" 2>/dev/null || true
+  sleep 1
+  lc_start "$n"
+  # The socket appears before the backend finishes starting, so poll the backend
+  # itself — otherwise we report a false "not logged in".
+  local i=0
+  until ts "$n" status >/dev/null 2>&1 || [ $i -ge 20 ]; do sleep 0.5; i=$((i+1)); done
+  echo "$n enabled — starts at login on port $p, restarts if it crashes"
+  ts "$n" status >/dev/null 2>&1 || echo "note: $n is not logged in yet (foxtail up $n)"
+}
+
+cmd_disable() {
+  local n=${1:-}; checkname "$n"
+  enabled "$n" || die "$n is not enabled"
+  lc_stop "$n"
+  rm -f "$(plist "$n")"
+  echo "$n disabled — the daemon keeps running until you stop it, but will not return at login"
+}
+
 cmd_ls() {
-  printf '%-14s %-6s %-10s %-28s %s\n' NAME PORT STATE TAILNET/ACCOUNT NODES
+  printf '%-14s %-6s %-10s %-5s %-28s %s\n' NAME PORT STATE AUTO TAILNET/ACCOUNT NODES
   if pgrep -qf 'io.tailscale.ipn.macsys.network-extension'; then
     local url nodes
     url=$(tailscale debug prefs 2>/dev/null | sed -n 's/.*"ControlURL": "\(.*\)".*/\1/p' | head -1)
     nodes=$(tailscale status 2>/dev/null | grep -c '^1' || true)
-    printf '%-14s %-6s %-10s %-28s %s\n' '(GUI app)' native native "${url#https://}" "$nodes"
+    printf '%-14s %-6s %-10s %-5s %-28s %s\n' '(GUI app)' native native app "${url#https://}" "$nodes"
   fi
-  local n p state url nodes
+  local n p state url nodes auto
   for n in $(names); do
     p=$(port "$n"); p=${p:-?}
+    if enabled "$n"; then auto=yes; else auto=no; fi
     if ! running "$n"; then
       state=stopped; url=-; nodes=-
     elif ts "$n" status >/dev/null 2>&1; then
@@ -87,7 +163,7 @@ cmd_ls() {
     else
       state=logged-out; url=-; nodes=-
     fi
-    printf '%-14s %-6s %-10s %-28s %s\n' "$n" "$p" "$state" "$url" "$nodes"
+    printf '%-14s %-6s %-10s %-5s %-28s %s\n' "$n" "$p" "$state" "$auto" "$url" "$nodes"
   done
 }
 
@@ -109,6 +185,13 @@ cmd_up() {
 
   if running "$n"; then
     echo "daemon already running (port $p)"
+  elif enabled "$n"; then
+    # launchd owns this one — let it do the starting, or KeepAlive fights us
+    lc_start "$n"
+    local i=0
+    until [ -S "$(sock "$n")" ] || [ $i -ge 20 ]; do sleep 0.5; i=$((i+1)); done
+    [ -S "$(sock "$n")" ] || die "launchd did not start the daemon, see $(dir "$n")/daemon.log"
+    echo "daemon up on 127.0.0.1:$p (launchd)"
   else
     # a stale socket from a killed daemon stops the new one from binding
     [ -S "$(sock "$n")" ] && rm -f "$(sock "$n")"
@@ -152,6 +235,12 @@ cmd_up() {
 
 cmd_down() {
   local n=${1:-}; checkname "$n"
+  if enabled "$n"; then
+    # KeepAlive would restart it instantly, so stop the job rather than the process
+    lc_stop "$n"
+    echo "$n stopped (still enabled — returns at next login, or 'foxtail up $n')"
+    return 0
+  fi
   if pkill -f -- "--socket=$(sock "$n")"; then echo "$n stopped"; else echo "$n was not running"; fi
 }
 
@@ -163,7 +252,8 @@ cmd_rm() {
   case "$d" in "$pre"?*) ;; *) die "refusing to delete $d" ;; esac
   printf 'Delete state for "%s"? The node stays registered on that tailnet — remove it in the admin console too. [y/N] ' "$n"
   read -r a; case $a in [yY]*) ;; *) echo aborted; return 1 ;; esac
-  cmd_down "$n" || true
+  enabled "$n" && { lc_stop "$n"; rm -f "$(plist "$n")"; }
+  pkill -f -- "--socket=$(sock "$n")" 2>/dev/null || true
   rm -rf "$d" && echo "$n removed"
 }
 
@@ -265,7 +355,19 @@ cmd_doctor() {
 
   echo
   echo "persistence"
-  warn "daemons do not survive a reboot — re-run foxtail up for each"
+  if [ -z "$list" ]; then
+    :
+  else
+    for n in $list; do
+      if ! enabled "$n"; then
+        warn "$n: not enabled — will not come back after a reboot (foxtail enable $n)"
+      elif loaded "$n"; then
+        ok "$n: launchd agent loaded, returns at login"
+      else
+        bad "$n: has a launchd plist but the agent is not loaded (foxtail enable $n)"
+      fi
+    done
+  fi
 
   echo
   if [ "$doctor_fail" -gt 0 ]; then
@@ -297,6 +399,10 @@ cmd_selftest() {
   done
 
   d=$(freeport); [ "$d" -ge 1055 ] 2>/dev/null || { echo "FAIL freeport: $d"; return 1; }
+
+  d=$(label work); [ "$d" = "com.foxtail.work" ] || { echo "FAIL label: $d"; return 1; }
+  d=$(plist work); [ "$d" = "$HOME/Library/LaunchAgents/com.foxtail.work.plist" ] || { echo "FAIL plist: $d"; return 1; }
+
   echo "selftest ok"
 }
 
@@ -343,6 +449,8 @@ case "$cmd" in
   rm)       cmd_rm "$@" ;;
   exec)     cmd_exec "$@" ;;
   ssh)      cmd_ssh "$@" ;;
+  enable)   cmd_enable "$@" ;;
+  disable)  cmd_disable "$@" ;;
   doctor)   cmd_doctor "$@" ;;
   selftest) cmd_selftest "$@" ;;
   menu)     cmd_menu "$@" ;;

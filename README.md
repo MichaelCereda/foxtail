@@ -84,6 +84,8 @@ foxtail down work             # stop the daemon, keep the login
 foxtail exec work curl http://intranet/
 foxtail ssh work build-box
 foxtail rm work               # stop and delete state (asks first)
+foxtail enable work           # start at login, restart on crash (launchd)
+foxtail disable work          # stop starting automatically
 foxtail doctor                # check this machine's setup and daemon health
 foxtail selftest              # assert foxtail's own helpers still work
 ```
@@ -96,8 +98,37 @@ foxtail selftest              # assert foxtail's own helpers still work
 | `exec <name> cmd…` | Runs any command with `ALL_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` pointed at that tailnet |
 | `ssh <name> host` | `ssh` through that tailnet's proxy, so MagicDNS names work |
 | `rm <name>` | Stops the daemon and deletes its local state |
+| `enable <name>` | Installs a launchd agent so the tailnet starts at login and restarts if it crashes |
+| `disable <name>` | Removes the launchd agent. The running daemon is left alone |
 | `doctor` | Health check for *your machine*: dependencies, daemon and proxy state, login state, port clashes, profile drift. Exits non-zero on a failure |
 | `selftest` | Health check for *foxtail itself*: path helpers, name validation, port selection |
+
+### Surviving reboots
+
+`foxtail enable <name>` writes a per-tailnet launchd agent to
+`~/Library/LaunchAgents/com.foxtail.<name>.plist` and loads it:
+
+```console
+$ foxtail enable work
+work enabled — starts at login on port 1056, restarts if it crashes
+
+$ foxtail ls
+NAME           PORT   STATE      AUTO  TAILNET/ACCOUNT              NODES
+(GUI app)      native native     app   lab.example.com              4
+work           1056   up         yes   me@work.example              7
+```
+
+launchd supervises the daemon directly, so you get two things: it comes back
+after a reboot, and `KeepAlive` restarts it if it ever dies. The Tailscale login
+lives in the state directory, so a restart reconnects without re-authenticating.
+
+This is a **LaunchAgent**, so it starts at *login*, not at boot — which is the
+right scope, since the state lives in your home directory. On a FileVault
+machine there is no meaningful difference.
+
+`up` and `down` understand launchd: on an enabled tailnet `down` stops the job
+rather than the process, because `KeepAlive` would otherwise restart it
+instantly. `rm` removes the agent along with the state.
 
 ### doctor
 
@@ -185,7 +216,8 @@ Worth understanding before you commit to this.
 **Keep the tailnet you need full IP access to on the GUI app.** If it serves
 subnet routes or you use it as an exit node, it has to be the native one.
 
-Daemons do not survive a reboot — re-run `foxtail up <name>` for each.
+Daemons do not survive a reboot unless you run `foxtail enable <name>`; see
+[Surviving reboots](#surviving-reboots).
 
 ## How state is stored
 
@@ -210,6 +242,10 @@ you were driving `tailscale` by hand, `pkill -f "socket=.*<name>"` first.
 switched the GUI app's profile. `tailscale switch --list`, then
 `tailscale switch <id>` to put it back. To stop it happening, log the GUI app
 out of the profiles `foxtail` manages so they can't be selected there.
+
+**A tailnet shows `logged-out` right after starting.** The control socket
+appears before the backend has finished starting. Give it a few seconds and run
+`foxtail ls` again.
 
 **Connections refused on a node you can `tailscale ping`.** Ping proves the
 WireGuard path; refusal is above it. Either nothing is listening on that port,
