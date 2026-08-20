@@ -243,6 +243,25 @@ switched the GUI app's profile. `tailscale switch --list`, then
 `tailscale switch <id>` to put it back. To stop it happening, log the GUI app
 out of the profiles `foxtail` manages so they can't be selected there.
 
+**`ping node.tailXXXX.ts.net` or `host node.tailXXXX.ts.net` says NXDOMAIN.**
+Expected. An extra tailnet's names exist only inside its daemon — nothing is
+written to your Mac's resolver, deliberately, because that is what lets several
+tailnets coexist. Use the name through the proxy instead:
+
+```sh
+foxtail ssh personal node.tailXXXX.ts.net
+foxtail exec personal curl http://node.tailXXXX.ts.net/
+```
+
+Both the short name and the full MagicDNS name work there. `tailscale
+--socket=~/.tailscale-<name>/sock ping <shortname>` works too.
+
+This cannot be fixed by adding a resolver entry or an `/etc/hosts` line, and it
+is worth understanding why: resolution is not the real limit, **routing** is.
+Without a `utun` device there is no route to `100.64.0.0/10`, so a system-wide
+name would resolve to an address nothing on your Mac can reach. The proxy has to
+be in the path either way.
+
 **A tailnet shows `logged-out` right after starting.** The control socket
 appears before the backend has finished starting. Give it a few seconds and run
 `foxtail ls` again.

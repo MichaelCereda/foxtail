@@ -263,8 +263,9 @@ cmd_exec() {
   [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
   shift
   [ $# -gt 0 ] || die "usage: foxtail exec <name> cmd…"
-  # socks5h — the 'h' makes the daemon resolve MagicDNS names; plain socks5 asks the Mac, which cannot
-  ALL_PROXY="socks5h://localhost:$p" HTTPS_PROXY="http://localhost:$p" HTTP_PROXY="http://localhost:$p" "$@"
+  # socks5h — the 'h' makes the daemon resolve MagicDNS names; plain socks5 asks the Mac, which cannot.
+  # 127.0.0.1 rather than localhost: the proxy is IPv4-only, and clients that try ::1 first eat a refusal.
+  ALL_PROXY="socks5h://127.0.0.1:$p" HTTPS_PROXY="http://127.0.0.1:$p" HTTP_PROXY="http://127.0.0.1:$p" "$@"
 }
 
 cmd_ssh() {
@@ -274,7 +275,7 @@ cmd_ssh() {
   [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
   shift
   [ $# -gt 0 ] || die "usage: foxtail ssh <name> host"
-  ssh -o ProxyCommand="nc -X 5 -x localhost:$p %h %p" "$@"
+  ssh -o ProxyCommand="nc -X 5 -x 127.0.0.1:$p %h %p" "$@"
 }
 
 # ---------------------------------------------------------------- doctor ----
