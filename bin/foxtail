@@ -144,11 +144,16 @@ cmd_menu() {
     list=$(names)
     [ -n "$list" ] || { echo "no extra tailnets yet — foxtail up <name>"; return 0; }
     PS3=$'\nTailnet (or Quit): '
+    n=""
     select n in $list Quit; do
       [ "$n" = Quit ] && return 0
       [ -n "$n" ] && break
     done
+    # select exits with an empty choice on EOF/Ctrl-D; without this the outer
+    # loop spins forever and empty names leak into the action branch
+    [ -n "$n" ] || { echo; return 0; }
     PS3=$'Action: '
+    a=""
     select a in start stop shell status back; do
       case $a in
         start)  cmd_up "$n" ;;
@@ -159,6 +164,7 @@ cmd_menu() {
       esac
       break
     done
+    [ -n "$a" ] || { echo; return 0; }
   done
 }
 
@@ -173,15 +179,20 @@ cmd_selftest() {
   echo "selftest ok"
 }
 
-case "${1:-menu}" in
-  ls|list)  shift; cmd_ls "$@" ;;
-  up)       shift; cmd_up "$@" ;;
-  down)     shift; cmd_down "$@" ;;
-  rm)       shift; cmd_rm "$@" ;;
-  exec)     shift; cmd_exec "$@" ;;
-  ssh)      shift; cmd_ssh "$@" ;;
-  selftest) shift; cmd_selftest "$@" ;;
-  menu)     shift; cmd_menu "$@" ;;
+# `shift` with no positional args returns non-zero, which set -e turns into a
+# silent exit — so consume the subcommand only when there is one.
+cmd=${1:-menu}
+[ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+  ls|list)  cmd_ls "$@" ;;
+  up)       cmd_up "$@" ;;
+  down)     cmd_down "$@" ;;
+  rm)       cmd_rm "$@" ;;
+  exec)     cmd_exec "$@" ;;
+  ssh)      cmd_ssh "$@" ;;
+  selftest) cmd_selftest "$@" ;;
+  menu)     cmd_menu "$@" ;;
   -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0" ;;
-  *)        echo "unknown command: $1" >&2; exit 1 ;;
+  *)        echo "unknown command: $cmd" >&2; exit 1 ;;
 esac
