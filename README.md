@@ -84,7 +84,8 @@ foxtail down work             # stop the daemon, keep the login
 foxtail exec work curl http://intranet/
 foxtail ssh work build-box
 foxtail rm work               # stop and delete state (asks first)
-foxtail selftest              # assert internal helpers still work
+foxtail doctor                # check this machine's setup and daemon health
+foxtail selftest              # assert foxtail's own helpers still work
 ```
 
 | Command | What it does |
@@ -95,7 +96,40 @@ foxtail selftest              # assert internal helpers still work
 | `exec <name> cmd…` | Runs any command with `ALL_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` pointed at that tailnet |
 | `ssh <name> host` | `ssh` through that tailnet's proxy, so MagicDNS names work |
 | `rm <name>` | Stops the daemon and deletes its local state |
-| `selftest` | Checks path helpers, name round-tripping and port selection |
+| `doctor` | Health check for *your machine*: dependencies, daemon and proxy state, login state, port clashes, profile drift. Exits non-zero on a failure |
+| `selftest` | Health check for *foxtail itself*: path helpers, name validation, port selection |
+
+### doctor
+
+`doctor` answers "is my setup sane right now", and is the first thing to run
+when something is off:
+
+```console
+$ foxtail doctor
+dependencies
+  ok    tailscale (/opt/homebrew/bin/tailscale)
+  ok    tailscaled (/opt/homebrew/bin/tailscaled)
+  ok    jq (/usr/bin/jq)
+
+native tailnet
+  ok    Tailscale.app running, control lab.example.com
+  warn  'work' is connected natively AND through foxtail — the GUI app may have
+        switched profiles (tailscale switch --list)
+
+managed tailnets
+  ok    work: proxy on 127.0.0.1:1056
+  ok    work: logged in as me@work.example
+  warn  personal: daemon not running (foxtail up personal)
+
+conflicts
+  ok    no duplicate proxy ports
+
+healthy (2 warning(s))
+```
+
+It is distinct from `selftest`: `doctor` inspects your machine, `selftest`
+inspects foxtail's own logic. Colour is dropped when stdout is not a terminal,
+so it pipes cleanly into a log or a CI job.
 
 ### Logging in reliably
 
@@ -113,6 +147,10 @@ TS_AUTHKEY=tskey-auth-... foxtail up work
 Generate one under **Settings → Keys** in the admin console of the tailnet you
 actually want, and check the tailnet name in the switcher before you click
 generate.
+
+The key is never passed as a command-line argument — `foxtail` writes it to a
+`0600` temporary file and hands `tailscale` a `file:` reference, so it does not
+show up in `ps` for other users on the machine.
 
 ### Pointing other tools at a tailnet
 
@@ -179,7 +217,13 @@ or the tailnet's ACLs don't grant this new node access to that service.
 
 ## Contributing
 
-It's one Bash script. Run `foxtail selftest` before you push.
+It's one Bash script. Run `foxtail selftest` before you push, and `foxtail
+doctor` if you changed anything about daemon or proxy handling.
+
+Tailnet names index into `$HOME/.tailscale-<name>` and are passed to `pgrep`
+and `rm -rf`, so they are validated as a trust boundary — letters, digits,
+`.`, `_`, `-`, no leading dot, no traversal. `selftest` asserts both the
+accepted and rejected cases; please keep it that way.
 
 ## License
 

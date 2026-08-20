@@ -12,41 +12,65 @@
 #   foxtail exec <name> cmd…   run cmd with ALL_PROXY pointed at that tailnet
 #   foxtail ssh <name> host    ssh into a node on that tailnet
 #   foxtail rm <name>          stop and delete its state
-#   foxtail selftest           assert internal helpers still work
+#   foxtail doctor             check this machine's setup and daemon health
+#   foxtail selftest           assert foxtail's own helpers still work
 
-set -eu
+set -euo pipefail
 
 pre="$HOME/.tailscale-"
 
+die() { echo "foxtail: $*" >&2; exit 1; }
+
+# Names index into $HOME/.tailscale-<name> and are handed to pgrep and rm -rf,
+# so they are a trust boundary: no slashes, no dots-only, no pattern characters.
+valid_name() {
+  case "${1:-}" in
+    ""|*/*|*..*) return 1 ;;
+    *) [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ;;
+  esac
+}
+checkname() { valid_name "${1:-}" || die "invalid tailnet name: '${1:-}' (use letters, digits, . _ -)"; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1${2:+ ($2)}"; }
+
 dir()  { printf '%s%s' "$pre" "$1"; }
 sock() { printf '%s%s/sock' "$pre" "$1"; }
-port() {
-  cat "$(dir "$1")/port" 2>/dev/null && return
-  # recover the port from a daemon that was started before the port file existed
-  ps ax -o args= | sed -n "s|.*--socks5-server=localhost:\([0-9]*\).*--socket=$(sock "$1") .*|\1|p" | head -1
-}
 ts()   { tailscale --socket="$(sock "$1")" "${@:2}"; }
 
-# name of every tailnet we manage, derived from the state dirs — no config file to drift
+port() {
+  local p
+  p=$(cat "$(dir "$1")/port" 2>/dev/null || true)
+  # recover the port from a daemon started before the port file existed
+  [ -n "$p" ] || p=$(ps ax -o args= | sed -n "s|.*--socks5-server=localhost:\([0-9]*\).*--socket=$(sock "$1") .*|\1|p" | head -1)
+  case "$p" in ''|*[!0-9]*) return 0 ;; esac   # ignore anything non-numeric
+  [ "$p" -ge 1 ] && [ "$p" -le 65535 ] && printf '%s' "$p"
+}
+
+# every tailnet we manage, derived from the state dirs — no config file to drift
 names() {
+  local d
   for d in "$pre"*/; do
     [ -d "$d" ] || continue
-    d=${d%/}; printf '%s\n' "${d##*/.tailscale-}"
+    d=${d%/}; d=${d##*/.tailscale-}
+    valid_name "$d" && printf '%s\n' "$d"
   done
 }
 
 running() { pgrep -qf -- "--socket=$(sock "$1")"; }
 
-# lowest free TCP port from 1055 up
 freeport() {
   local p=1055
-  while lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; do p=$((p+1)); done
+  while lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; do
+    p=$((p+1))
+    [ "$p" -lt 1200 ] || die "no free port between 1055 and 1200"
+  done
   printf '%s' "$p"
 }
 
+account() { ts "$1" status --json 2>/dev/null | jq -r '.User[.Self.UserID|tostring].LoginName // .MagicDNSSuffix // "-"'; }
+
 cmd_ls() {
   printf '%-14s %-6s %-10s %-28s %s\n' NAME PORT STATE TAILNET/ACCOUNT NODES
-  # the GUI app's tailnet, listed for context — it is not managed here
   if pgrep -qf 'io.tailscale.ipn.macsys.network-extension'; then
     local url nodes
     url=$(tailscale debug prefs 2>/dev/null | sed -n 's/.*"ControlURL": "\(.*\)".*/\1/p' | head -1)
@@ -59,9 +83,7 @@ cmd_ls() {
     if ! running "$n"; then
       state=stopped; url=-; nodes=-
     elif ts "$n" status >/dev/null 2>&1; then
-      state=up
-      url=$(ts "$n" status --json 2>/dev/null | jq -r '.User[.Self.UserID|tostring].LoginName // .MagicDNSSuffix // "-"')
-      nodes=$(ts "$n" status 2>/dev/null | grep -c '^1' || true)
+      state=up; url=$(account "$n"); nodes=$(ts "$n" status 2>/dev/null | grep -c '^1' || true)
     else
       state=logged-out; url=-; nodes=-
     fi
@@ -70,15 +92,27 @@ cmd_ls() {
 }
 
 cmd_up() {
-  local n=${1:?usage: foxtail up <name> [port]} p=${2:-}
-  [ -n "$p" ] || p=$(port "$n")
-  [ -n "$p" ] || p=$(freeport)
+  local n=${1:-} p=${2:-}
+  checkname "$n"
+  need tailscaled "brew install tailscale"
+  need tailscale
+  if [ -n "$p" ]; then
+    case "$p" in ''|*[!0-9]*) die "port must be a number: $p" ;; esac
+    [ "$p" -ge 1024 ] && [ "$p" -le 65535 ] || die "port out of range: $p"
+  else
+    p=$(port "$n") || true
+    [ -n "$p" ] || p=$(freeport)
+  fi
+
   mkdir -p "$(dir "$n")"
-  printf '%s' "$p" > "$(dir "$n")/port"
+  chmod 700 "$(dir "$n")"
 
   if running "$n"; then
     echo "daemon already running (port $p)"
   else
+    # a stale socket from a killed daemon stops the new one from binding
+    [ -S "$(sock "$n")" ] && rm -f "$(sock "$n")"
+    printf '%s' "$p" > "$(dir "$n")/port"
     nohup tailscaled \
       --tun=userspace-networking \
       --socks5-server=localhost:"$p" \
@@ -90,7 +124,7 @@ cmd_up() {
     # ponytail: poll for the socket, 10s cap. tailscaled has no readiness signal.
     local i=0
     until [ -S "$(sock "$n")" ] || [ $i -ge 20 ]; do sleep 0.5; i=$((i+1)); done
-    [ -S "$(sock "$n")" ] || { echo "daemon failed to start, see $(dir "$n")/daemon.log" >&2; return 1; }
+    [ -S "$(sock "$n")" ] || die "daemon failed to start, see $(dir "$n")/daemon.log"
     echo "daemon up on 127.0.0.1:$p"
   fi
 
@@ -99,42 +133,171 @@ cmd_up() {
   # Stacked `up` processes on one socket deadlock the login — clear any first.
   pkill -f -- "--socket=$(sock "$n") up" 2>/dev/null || true
 
+  local host; host=$(hostname -s | tr -cd 'A-Za-z0-9-')
   if [ -n "${TS_AUTHKEY:-}" ]; then
-    ts "$n" up --authkey="$TS_AUTHKEY" --hostname="$(hostname -s)-$n" --accept-dns=false
+    # Passing the key as an argument would expose it in `ps` to every local
+    # user, so hand tailscale a 0600 file instead.
+    local kf; kf=$(mktemp "${TMPDIR:-/tmp}/foxtail.XXXXXX")
+    chmod 600 "$kf"
+    trap 'rm -f "$kf"' RETURN
+    printf '%s' "$TS_AUTHKEY" > "$kf"
+    ts "$n" up --auth-key="file:$kf" --hostname="$host-$n" --accept-dns=false
   else
     echo "Browser login. If you have several Tailscale accounts, CHECK THE TAILNET"
-    echo "in the page's account switcher — the wrong one silently enrolls the node elsewhere."
+    echo "in the page's account switcher — the wrong one silently enrols the node elsewhere."
     echo "Deterministic alternative: TS_AUTHKEY=tskey-auth-... foxtail up $n"
-    ts "$n" up --hostname="$(hostname -s)-$n" --accept-dns=false
+    ts "$n" up --hostname="$host-$n" --accept-dns=false
   fi
 }
 
 cmd_down() {
-  local n=${1:?usage: foxtail down <name>}
-  pkill -f -- "--socket=$(sock "$n")" && echo "$n stopped" || echo "$n was not running"
+  local n=${1:-}; checkname "$n"
+  if pkill -f -- "--socket=$(sock "$n")"; then echo "$n stopped"; else echo "$n was not running"; fi
 }
 
 cmd_rm() {
-  local n=${1:?usage: foxtail rm <name>}
+  local n=${1:-}; checkname "$n"
+  local d; d=$(dir "$n")
+  [ -d "$d" ] || die "no such tailnet: $n"
+  # belt and braces: never rm -rf outside the managed prefix
+  case "$d" in "$pre"?*) ;; *) die "refusing to delete $d" ;; esac
   printf 'Delete state for "%s"? The node stays registered on that tailnet — remove it in the admin console too. [y/N] ' "$n"
-  read -r a; case $a in [yY]*) ;; *) echo aborted; return 1;; esac
+  read -r a; case $a in [yY]*) ;; *) echo aborted; return 1 ;; esac
   cmd_down "$n" || true
-  rm -rf "$(dir "$n")" && echo "$n removed"
+  rm -rf "$d" && echo "$n removed"
 }
 
 cmd_exec() {
-  local n=${1:?usage: foxtail exec <name> cmd…} p
-  p=$(port "$n"); [ -n "$p" ] || { echo "unknown tailnet: $n" >&2; return 1; }
+  local n=${1:-}; checkname "$n"
+  local p; p=$(port "$n") || true
+  [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
   shift
+  [ $# -gt 0 ] || die "usage: foxtail exec <name> cmd…"
   # socks5h — the 'h' makes the daemon resolve MagicDNS names; plain socks5 asks the Mac, which cannot
   ALL_PROXY="socks5h://localhost:$p" HTTPS_PROXY="http://localhost:$p" HTTP_PROXY="http://localhost:$p" "$@"
 }
 
 cmd_ssh() {
-  local n=${1:?usage: foxtail ssh <name> host} p
-  p=$(port "$n"); [ -n "$p" ] || { echo "unknown tailnet: $n" >&2; return 1; }
+  local n=${1:-}; checkname "$n"
+  need nc
+  local p; p=$(port "$n") || true
+  [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
   shift
+  [ $# -gt 0 ] || die "usage: foxtail ssh <name> host"
   ssh -o ProxyCommand="nc -X 5 -x localhost:$p %h %p" "$@"
+}
+
+# ---------------------------------------------------------------- doctor ----
+# selftest checks foxtail's own logic; doctor checks this machine.
+# colour only when stdout is a terminal, so piping doctor into a file or CI stays clean
+if [ -t 1 ]; then C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'; C_OFF=$'\033[0m'
+else C_OK=""; C_WARN=""; C_BAD=""; C_OFF=""; fi
+ok()   { printf '  %sok%s    %s\n' "$C_OK" "$C_OFF" "$*"; }
+warn() { printf '  %swarn%s  %s\n' "$C_WARN" "$C_OFF" "$*"; doctor_warn=$((doctor_warn+1)); }
+bad()  { printf '  %sfail%s  %s\n' "$C_BAD" "$C_OFF" "$*"; doctor_fail=$((doctor_fail+1)); }
+
+cmd_doctor() {
+  local doctor_warn=0 doctor_fail=0
+
+  echo "dependencies"
+  local c
+  for c in tailscale tailscaled jq lsof; do
+    if command -v "$c" >/dev/null 2>&1; then ok "$c ($(command -v "$c"))"; else bad "$c not found"; fi
+  done
+  command -v nc >/dev/null 2>&1 && ok "nc (needed by foxtail ssh)" || warn "nc not found — foxtail ssh will not work"
+
+  echo
+  echo "native tailnet"
+  if pgrep -qf 'io.tailscale.ipn.macsys.network-extension'; then
+    local gui_url gui_ver cli_ver
+    gui_url=$(tailscale debug prefs 2>/dev/null | sed -n 's/.*"ControlURL": "\(.*\)".*/\1/p' | head -1)
+    ok "Tailscale.app running, control ${gui_url#https://}"
+    cli_ver=$(tailscale version 2>/dev/null | head -1)
+    # the skew warning goes to stderr on status, not on version
+    gui_ver=$(tailscale status 2>&1 >/dev/null | sed -n 's/.*tailscaled server version "\([^"]*\)".*/\1/p' | head -1)
+    if [ -n "$gui_ver" ]; then
+      warn "CLI $cli_ver vs GUI daemon ${gui_ver%%-*} — cosmetic, 'brew upgrade tailscale' clears it"
+    else
+      ok "CLI and GUI daemon versions agree ($cli_ver)"
+    fi
+    # a tailnet connected both natively and through foxtail is a switch accident
+    local n
+    for n in $(names); do
+      running "$n" || continue
+      [ "$(account "$n" 2>/dev/null)" = "$(tailscale status --json 2>/dev/null | jq -r '.User[.Self.UserID|tostring].LoginName // "-"')" ] &&
+        warn "'$n' is connected natively AND through foxtail — the GUI app may have switched profiles (tailscale switch --list)"
+    done
+  else
+    warn "Tailscale.app not running — no native tailnet"
+  fi
+
+  echo
+  echo "managed tailnets"
+  local list; list=$(names)
+  [ -n "$list" ] || warn "none configured yet — foxtail up <name>"
+  local n p
+  for n in $list; do
+    p=$(port "$n") || true
+    if ! running "$n"; then
+      warn "$n: daemon not running (foxtail up $n)"
+      continue
+    fi
+    [ -n "$p" ] || { bad "$n: running but no port recorded"; continue; }
+    if lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | grep -q '127.0.0.1'; then
+      ok "$n: proxy on 127.0.0.1:$p"
+    elif lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | grep -q '\*:'; then
+      bad "$n: proxy on port $p is bound to ALL interfaces, not loopback"
+    else
+      bad "$n: daemon running but nothing listening on $p"
+    fi
+    if ts "$n" status >/dev/null 2>&1; then
+      ok "$n: logged in as $(account "$n")"
+    else
+      warn "$n: logged out (TS_AUTHKEY=tskey-... foxtail up $n)"
+    fi
+  done
+
+  echo
+  echo "conflicts"
+  local dupes
+  dupes=$(for n in $list; do port "$n"; echo; done | grep -v '^$' | sort | uniq -d)
+  [ -z "$dupes" ] && ok "no duplicate proxy ports" || bad "duplicate proxy ports: $(echo "$dupes" | tr '\n' ' ')"
+
+  echo
+  echo "persistence"
+  warn "daemons do not survive a reboot — re-run foxtail up for each"
+
+  echo
+  if [ "$doctor_fail" -gt 0 ]; then
+    echo "$doctor_fail problem(s), $doctor_warn warning(s)"; return 1
+  fi
+  echo "healthy ($doctor_warn warning(s))"
+}
+
+cmd_selftest() {
+  local d
+  d=$(dir work);  [ "$d" = "$HOME/.tailscale-work" ] || { echo "FAIL dir: $d"; return 1; }
+  d=$(sock work); [ "$d" = "$HOME/.tailscale-work/sock" ] || { echo "FAIL sock: $d"; return 1; }
+
+  # names() must round-trip a directory name back to a bare tailnet name
+  mkdir -p "${pre}zzselftest" && d=$(names | grep -c '^zzselftest$' || true) && rmdir "${pre}zzselftest"
+  [ "$d" = 1 ] || { echo "FAIL names() round-trip"; return 1; }
+
+  # names() must also drop directories whose names would fail validation
+  mkdir -p "$pre.hidden" && d=$(names | grep -c '^\.hidden$' || true) && rmdir "$pre.hidden"
+  [ "$d" = 0 ] || { echo "FAIL names() surfaced an invalid name"; return 1; }
+
+  # names are handed to rm -rf and pgrep, so validation is the safety-critical bit
+  local good bad_
+  for good in work personal a1 my.net my_net my-net; do
+    valid_name "$good" || { echo "FAIL rejected valid name: $good"; return 1; }
+  done
+  for bad_ in "" "." ".." "../evil" "a/b" "-lead" "*" "a b" '$(x)'; do
+    valid_name "$bad_" && { echo "FAIL accepted invalid name: '$bad_'"; return 1; }
+  done
+
+  d=$(freeport); [ "$d" -ge 1055 ] 2>/dev/null || { echo "FAIL freeport: $d"; return 1; }
+  echo "selftest ok"
 }
 
 cmd_menu() {
@@ -156,27 +319,16 @@ cmd_menu() {
     a=""
     select a in start stop shell status back; do
       case $a in
-        start)  cmd_up "$n" ;;
-        stop)   cmd_down "$n" ;;
+        start)  cmd_up "$n" || true ;;
+        stop)   cmd_down "$n" || true ;;
         status) ts "$n" status || true ;;
-        shell)  echo "proxy env set for $n — exit to come back"; cmd_exec "$n" "$SHELL" ;;
+        shell)  echo "proxy env set for $n — exit to come back"; cmd_exec "$n" "$SHELL" || true ;;
         back|"") ;;
       esac
       break
     done
     [ -n "$a" ] || { echo; return 0; }
   done
-}
-
-cmd_selftest() {
-  local d
-  d=$(dir work);   [ "$d" = "$HOME/.tailscale-work" ] || { echo "FAIL dir: $d"; return 1; }
-  d=$(sock work);  [ "$d" = "$HOME/.tailscale-work/sock" ] || { echo "FAIL sock: $d"; return 1; }
-  # names() must round-trip a dir name back to a bare tailnet name
-  mkdir -p "$pre.selftest-tmp" && d=$(names | grep -c '^\.selftest-tmp$') && rmdir "$pre.selftest-tmp"
-  [ "$d" = 1 ] || { echo "FAIL names() round-trip"; return 1; }
-  d=$(freeport); [ "$d" -ge 1055 ] 2>/dev/null || { echo "FAIL freeport: $d"; return 1; }
-  echo "selftest ok"
 }
 
 # `shift` with no positional args returns non-zero, which set -e turns into a
@@ -191,8 +343,9 @@ case "$cmd" in
   rm)       cmd_rm "$@" ;;
   exec)     cmd_exec "$@" ;;
   ssh)      cmd_ssh "$@" ;;
+  doctor)   cmd_doctor "$@" ;;
   selftest) cmd_selftest "$@" ;;
   menu)     cmd_menu "$@" ;;
   -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0" ;;
-  *)        echo "unknown command: $cmd" >&2; exit 1 ;;
+  *)        die "unknown command: $cmd (try: foxtail --help)" ;;
 esac
