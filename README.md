@@ -79,6 +79,8 @@ foxtail selftest
 ```sh
 foxtail                       # interactive menu
 foxtail ls                    # every tailnet and its state
+foxtail nodes                 # every node on every tailnet, with IPs and link status
+foxtail nodes work            # just one tailnet
 foxtail up work               # start the daemon and log in
 foxtail down work             # stop the daemon, keep the login
 foxtail exec work curl http://intranet/
@@ -93,6 +95,7 @@ foxtail selftest              # assert foxtail's own helpers still work
 | Command | What it does |
 | --- | --- |
 | `ls` | Table of the native tailnet plus every managed one: port, state, owning account, node count |
+| `nodes [name]` | Every node on every tailnet (or just one): name, Tailscale IP, OS, reachability, and whether the link is direct or relayed |
 | `up <name> [port]` | Starts a userspace daemon and logs in. Picks the lowest free port from 1055 if you don't name one |
 | `down <name>` | Stops the daemon. The login survives, so `up` reconnects without re-authenticating |
 | `exec <name> cmd…` | Runs any command with `ALL_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` pointed at that tailnet |
@@ -102,6 +105,34 @@ foxtail selftest              # assert foxtail's own helpers still work
 | `disable <name>` | Removes the launchd agent. The running daemon is left alone |
 | `doctor` | Health check for *your machine*: dependencies, daemon and proxy state, login state, port clashes, profile drift. Exits non-zero on a failure |
 | `selftest` | Health check for *foxtail itself*: path helpers, name validation, port selection |
+
+### Seeing every node at once
+
+`foxtail nodes` is the view the official client cannot give you — every node on
+every tailnet you are connected to, in one table:
+
+```console
+$ foxtail nodes
+TAILNET     NODE                  IP              OS     STATE               LINK
+(GUI app)   fileserver           100.64.0.1      linux  online              idle
+            laptop             100.64.0.4      macOS  online              -  ← this Mac
+
+work        build-box             100.81.10.48   linux  online              relay nyc
+            git                 100.125.10.78   linux  online              idle
+            old-laptop            100.96.10.19   macOS  offline 2026-08-20  -
+
+personal    nas                   100.98.14.22    macOS  online              direct 192.168.1.50
+            phone                 100.65.10.92   iOS    online              idle
+```
+
+`LINK` reports only connections that are actually up — `direct` with the peer's
+address when the connection is peer-to-peer, `relay <region>` when it is going
+through DERP, `idle` when the node is reachable but nothing is flowing. An idle
+peer's home DERP region is deliberately *not* shown, because printing it reads
+as "this traffic is being relayed" when there is no connection at all.
+
+Node names come from MagicDNS rather than the reported hostname, so iOS devices
+show up under their real names instead of `localhost`.
 
 ### Surviving reboots
 

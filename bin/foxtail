@@ -7,6 +7,7 @@
 #
 #   foxtail                    interactive menu
 #   foxtail ls                 show every tailnet and its state
+#   foxtail nodes [name]       list nodes on every tailnet (or just one) with their IPs
 #   foxtail up <name> [port]   start + log in   (env TS_AUTHKEY=tskey-... to skip browser)
 #   foxtail down <name>        stop the daemon (keeps login)
 #   foxtail exec <name> cmd…   run cmd with ALL_PROXY pointed at that tailnet
@@ -165,6 +166,72 @@ cmd_ls() {
     fi
     printf '%-14s %-6s %-10s %-5s %-28s %s\n' "$n" "$p" "$state" "$auto" "$url" "$nodes"
   done
+}
+
+# jq program producing one TSV row per node: hostname, address, OS, reachability,
+# link (direct / DERP relay), and whether it is this Mac.
+NODE_JQ='
+  ([.Self] + ((.Peer // {}) | to_entries | map(.value)))
+  | map(select(. != null))
+  | sort_by(((.DNSName // "") | split(".")[0]) // "")
+  | .[]
+  | [ (((.DNSName // "") | split(".")[0] | select(. != "")) // .HostName // "-"),
+      (.TailscaleIPs[0] // "-"),
+      (.OS // "-"),
+      (if (.ID == $self) or .Online then "online"
+       elif (.LastSeen // "") == "" then "offline"
+       else "offline " + (.LastSeen | split("T")[0]) end),
+      # Only report a link when one is actually up. .Relay on an idle peer is
+      # just its home DERP region, and printing that reads as "traffic is being
+      # relayed" when nothing is connected at all.
+      (if .ID == $self then "-"
+       elif (.Active // false) and ((.CurAddr // "") != "") then "direct " + (.CurAddr | split(":")[0])
+       elif (.Active // false) and ((.Relay // "") != "") then "relay " + .Relay
+       elif (.Active // false) then "active"
+       elif .Online then "idle"
+       else "-" end),
+      (if .ID == $self then "self" else "" end)
+    ] | @tsv'
+
+print_rows() {  # $1 = tailnet label, stdin = TSV rows
+  local label=$1 host ip os state link me
+  while IFS=$'\t' read -r host ip os state link me; do
+    [ -n "$host" ] || continue
+    printf '%-11s %-21s %-15s %-6s %-19s %s%s\n' \
+      "$label" "$host" "$ip" "$os" "$state" "$link" "${me:+  ← this Mac}"
+    label=""   # label only the first row of each tailnet
+  done
+}
+
+cmd_nodes() {
+  local want=${1:-}
+  [ -n "$want" ] && checkname "$want"
+  need jq
+  printf '%-11s %-21s %-15s %-6s %-19s %s\n' TAILNET NODE IP OS STATE LINK
+
+  local shown=0 json self n
+  if [ -z "$want" ] && pgrep -qf 'io.tailscale.ipn.macsys.network-extension'; then
+    if json=$(tailscale status --json 2>/dev/null) && [ -n "$json" ]; then
+      self=$(printf '%s' "$json" | jq -r '.Self.ID // ""')
+      printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows "(GUI app)"
+      shown=1
+    fi
+  fi
+
+  for n in $(names); do
+    [ -n "$want" ] && [ "$n" != "$want" ] && continue
+    if ! running "$n"; then
+      [ -n "$want" ] && die "$n is not running (foxtail up $n)"
+      continue
+    fi
+    json=$(ts "$n" status --json 2>/dev/null) || continue
+    printf '%s' "$json" | jq -e '.Self.ID' >/dev/null 2>&1 || continue
+    self=$(printf '%s' "$json" | jq -r '.Self.ID // ""')
+    [ "$shown" = 1 ] && echo
+    printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows "$n"
+    shown=1
+  done
+  [ "$shown" = 1 ] || echo "  no tailnet is up"
 }
 
 cmd_up() {
@@ -445,6 +512,7 @@ cmd=${1:-menu}
 
 case "$cmd" in
   ls|list)  cmd_ls "$@" ;;
+  nodes)    cmd_nodes "$@" ;;
   up)       cmd_up "$@" ;;
   down)     cmd_down "$@" ;;
   rm)       cmd_rm "$@" ;;
