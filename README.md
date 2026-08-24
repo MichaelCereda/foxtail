@@ -30,6 +30,7 @@ work           1056   up         me@work.example              7
 personal       1055   up         me@personal.example          6
 
 $ foxtail ssh work build-box
+foxtail forward work build-box 5901:5900   # for apps that cannot use a proxy
 me@build-box:~$
 
 $ foxtail exec personal curl -s http://nas:8080/health
@@ -99,6 +100,7 @@ foxtail selftest              # assert foxtail's own helpers still work
 | `up <name> [port]` | Starts a userspace daemon and logs in. Picks the lowest free port from 1055 if you don't name one |
 | `down <name>` | Stops the daemon. The login survives, so `up` reconnects without re-authenticating |
 | `exec <name> cmd…` | Runs any command with `ALL_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` pointed at that tailnet |
+| `forward <name> host <local>:<remote>` | Exposes a remote port on `127.0.0.1` for apps that ignore proxy settings. Rides SSH, so the node must accept your key |
 | `ssh <name> host` | `ssh` through that tailnet's proxy, so MagicDNS names work |
 | `rm <name>` | Stops the daemon and deletes its local state |
 | `enable <name>` | Installs a launchd agent so the tailnet starts at login and restarts if it crashes |
@@ -236,6 +238,26 @@ eval "$(foxtail exec work env | grep PROXY)"    # or set them for a whole shell
 Note the proxy speaks `socks5h`, not `socks5` — the `h` makes the daemon resolve
 MagicDNS names. Plain `socks5` would ask your Mac, which knows nothing about
 those tailnets.
+
+### Apps that cannot use a proxy
+
+Screen Sharing, database GUIs, and most native clients ignore proxy settings
+entirely, so they cannot reach a proxied tailnet — there is no route to
+`100.64.0.0/10` for them to use. Give them a plain loopback port instead:
+
+```console
+$ foxtail forward personal mac-mini.tail3d4e5f.ts.net 5901:5900
+127.0.0.1:5901 -> mac-mini.tail3d4e5f.ts.net:5900 (via personal)
+screen sharing:  open vnc://localhost:5901
+Ctrl-C to stop.
+```
+
+Then point the app at `127.0.0.1:5901`. This rides SSH, so the target node has
+to accept your SSH key — which is usually true of the machines you would want to
+screen-share into anyway.
+
+Note that macOS Screen Sharing also advertises UDP 3283 for Apple Remote
+Desktop; that will not work, but plain VNC on 5900 is all Screen Sharing needs.
 
 ## Limits
 

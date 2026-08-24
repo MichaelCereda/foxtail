@@ -12,6 +12,9 @@
 #   foxtail down <name>        stop the daemon (keeps login)
 #   foxtail exec <name> cmd…   run cmd with ALL_PROXY pointed at that tailnet
 #   foxtail ssh <name> host    ssh into a node on that tailnet
+#   foxtail forward <name> host <local>:<remote>
+#                              expose a remote port on 127.0.0.1 for apps that
+#                              cannot use a proxy (Screen Sharing, VNC, GUI clients)
 #   foxtail rm <name>          stop and delete its state
 #   foxtail enable <name>      start automatically at login (launchd), restart on crash
 #   foxtail disable <name>     stop starting automatically
@@ -346,6 +349,41 @@ cmd_ssh() {
   ssh -o ProxyCommand="nc -X 5 -x 127.0.0.1:$p %h %p" "$@"
 }
 
+# Apps that ignore proxy settings — Screen Sharing, database GUIs, most native
+# clients — cannot reach a proxied tailnet at all. A local forward gives them a
+# plain 127.0.0.1 port to talk to. This rides SSH, so the target node must
+# accept your SSH key.
+cmd_forward() {
+  local n=${1:-} host=${2:-} spec=${3:-}
+  checkname "$n"
+  [ -n "$host" ] && [ -n "$spec" ] || die "usage: foxtail forward <name> <host> <local>:<remote>"
+  need nc
+  local lport rport
+  lport=${spec%%:*}; rport=${spec##*:}
+  case "$lport" in ''|*[!0-9]*) die "bad local port: $lport" ;; esac
+  case "$rport" in ''|*[!0-9]*) die "bad remote port: $rport" ;; esac
+  [ "$lport" = "$spec" ] && die "usage: foxtail forward <name> <host> <local>:<remote>"
+
+  local p; p=$(port "$n") || true
+  [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
+
+  if lsof -nP -iTCP:"$lport" -sTCP:LISTEN >/dev/null 2>&1; then
+    die "local port $lport is already in use"
+  fi
+
+  echo "127.0.0.1:$lport -> $host:$rport (via $n)"
+  case "$rport" in
+    5900) echo "screen sharing:  open vnc://localhost:$lport" ;;
+    5432) echo "postgres:        psql -h 127.0.0.1 -p $lport" ;;
+    3306) echo "mysql:           mysql -h 127.0.0.1 -P $lport" ;;
+    *)    echo "connect to:      127.0.0.1:$lport" ;;
+  esac
+  echo "Ctrl-C to stop."
+  ssh -N -o ProxyCommand="nc -X 5 -x 127.0.0.1:$p %h %p" \
+      -o ExitOnForwardFailure=yes \
+      -L "$lport:localhost:$rport" "$host"
+}
+
 # ---------------------------------------------------------------- doctor ----
 # selftest checks foxtail's own logic; doctor checks this machine.
 # colour only when stdout is a terminal, so piping doctor into a file or CI stays clean
@@ -519,6 +557,7 @@ case "$cmd" in
   rm)       cmd_rm "$@" ;;
   exec)     cmd_exec "$@" ;;
   ssh)      cmd_ssh "$@" ;;
+  forward)  cmd_forward "$@" ;;
   enable)   cmd_enable "$@" ;;
   disable)  cmd_disable "$@" ;;
   doctor)   cmd_doctor "$@" ;;
