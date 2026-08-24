@@ -173,14 +173,14 @@ cmd_ls() {
 NODE_JQ='
   ([.Self] + ((.Peer // {}) | to_entries | map(.value)))
   | map(select(. != null))
-  | sort_by(((.DNSName // "") | split(".")[0]) // "")
+  | sort_by((.DNSName // .HostName // ""))
   | .[]
-  | [ (((.DNSName // "") | split(".")[0] | select(. != "")) // .HostName // "-"),
+  | [ (((.DNSName // "") | sub("\\.$"; "") | select(. != "")) // .HostName // "-"),
       (.TailscaleIPs[0] // "-"),
       (.OS // "-"),
       (if (.ID == $self) or .Online then "online"
        elif (.LastSeen // "") == "" then "offline"
-       else "offline " + (.LastSeen | split("T")[0]) end),
+       else "offline " + (.LastSeen | split("T")[0] | split("-")[1:] | join("-")) end),
       # Only report a link when one is actually up. .Relay on an idle peer is
       # just its home DERP region, and printing that reads as "traffic is being
       # relayed" when nothing is connected at all.
@@ -193,13 +193,12 @@ NODE_JQ='
       (if .ID == $self then "self" else "" end)
     ] | @tsv'
 
-print_rows() {  # $1 = tailnet label, stdin = TSV rows
-  local label=$1 host ip os state link me
+print_rows() {  # stdin = TSV rows
+  local host ip os state link me
   while IFS=$'\t' read -r host ip os state link me; do
     [ -n "$host" ] || continue
-    printf '%-11s %-21s %-15s %-6s %-19s %s%s\n' \
-      "$label" "$host" "$ip" "$os" "$state" "$link" "${me:+  ← this Mac}"
-    label=""   # label only the first row of each tailnet
+    printf '  %-38s %-15s %-6s %-13s %s%s\n' \
+      "$host" "$ip" "$os" "$state" "$link" "${me:+  ← this Mac}"
   done
 }
 
@@ -207,13 +206,14 @@ cmd_nodes() {
   local want=${1:-}
   [ -n "$want" ] && checkname "$want"
   need jq
-  printf '%-11s %-21s %-15s %-6s %-19s %s\n' TAILNET NODE IP OS STATE LINK
+  printf '  %-38s %-15s %-6s %-13s %s\n' NODE IP OS STATE LINK
 
   local shown=0 json self n
   if [ -z "$want" ] && pgrep -qf 'io.tailscale.ipn.macsys.network-extension'; then
     if json=$(tailscale status --json 2>/dev/null) && [ -n "$json" ]; then
       self=$(printf '%s' "$json" | jq -r '.Self.ID // ""')
-      printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows "(GUI app)"
+      printf '\n%s (native) — %s\n' "(GUI app)" "$(tailscale debug prefs 2>/dev/null | sed -n 's/.*"ControlURL": "https:\/\/\(.*\)".*/\1/p' | head -1)"
+      printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows
       shown=1
     fi
   fi
@@ -228,7 +228,8 @@ cmd_nodes() {
     printf '%s' "$json" | jq -e '.Self.ID' >/dev/null 2>&1 || continue
     self=$(printf '%s' "$json" | jq -r '.Self.ID // ""')
     [ "$shown" = 1 ] && echo
-    printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows "$n"
+    printf '%s (port %s) — %s\n' "$n" "$(port "$n")" "$(account "$n")"
+    printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows
     shown=1
   done
   [ "$shown" = 1 ] || echo "  no tailnet is up"

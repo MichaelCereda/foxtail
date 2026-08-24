@@ -113,17 +113,25 @@ every tailnet you are connected to, in one table:
 
 ```console
 $ foxtail nodes
-TAILNET     NODE                  IP              OS     STATE               LINK
-(GUI app)   fileserver           100.64.0.1      linux  online              idle
-            laptop             100.64.0.4      macOS  online              -  ← this Mac
+  NODE                                   IP              OS     STATE         LINK
 
-work        build-box             100.81.10.48   linux  online              relay nyc
-            git                 100.125.10.78   linux  online              idle
-            old-laptop            100.96.10.19   macOS  offline 2026-08-20  -
+(GUI app) (native) — lab.example.com
+  fileserver.hq.example                 100.64.0.1      linux  online        idle
+  laptop.hq.example                   100.64.0.4      macOS  online        -  ← this Mac
 
-personal    nas                   100.98.14.22    macOS  online              direct 192.168.1.50
-            phone                 100.65.10.92   iOS    online              idle
+work (port 1056) — me@work.example
+  build-box.tail0a1b2c.ts.net            100.81.10.48   linux  online        relay nyc
+  git.tail0a1b2c.ts.net                100.125.10.78   linux  online        idle
+  old-laptop.tail0a1b2c.ts.net           100.96.10.19   macOS  offline 08-20 -
+
+personal (port 1055) — me@personal.example
+  nas.tail3d4e5f.ts.net                  100.98.14.22    macOS  online        direct 192.168.1.50
+  phone.tail3d4e5f.ts.net                100.65.10.92   iOS    online        idle
 ```
+
+Names are printed in full so they can be copied straight into `foxtail ssh` or a
+browser. Each group is headed by the tailnet, its proxy port and the account
+that owns it.
 
 `LINK` reports only connections that are actually up — `direct` with the peer's
 address when the connection is peer-to-peer, `relay <region>` when it is going
