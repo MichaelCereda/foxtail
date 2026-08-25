@@ -1,8 +1,8 @@
 class Foxtail < Formula
   desc "Connect to several Tailscale tailnets at the same time on macOS"
   homepage "https://github.com/MichaelCereda/foxtail"
-  url "https://github.com/MichaelCereda/foxtail/releases/download/v0.1.2/foxtail-0.1.2.tar.gz"
-  sha256 "2af506ebf42caf2b88ef5c0fe7aebee840930731d428e6f777cc651ddd380713"
+  url "https://github.com/MichaelCereda/foxtail/releases/download/v0.1.3/foxtail-0.1.3.tar.gz"
+  sha256 "a8dfa40a87a0437c3d11392c284ba6e781892d6e1310aaee263d9e54ebd921f2"
   license "MIT"
   head "https://github.com/MichaelCereda/foxtail.git", branch: "main"
 
