@@ -208,7 +208,10 @@ print_rows() {  # stdin = TSV rows
 
 cmd_nodes() {
   local want=${1:-}
-  [ -n "$want" ] && checkname "$want"
+  if [ -n "$want" ]; then
+    checkname "$want"
+    [ -d "$(dir "$want")" ] || die "no such tailnet: $want (try: foxtail ls)"
+  fi
   need jq
   printf '  %-38s %-15s %-6s %-13s %s\n' NODE IP OS STATE LINK
 
