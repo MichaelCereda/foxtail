@@ -68,8 +68,11 @@ ephemeral port and never collides with the GUI app's `41641`.
 
 ```sh
 brew tap michaelcereda/foxtail https://github.com/MichaelCereda/foxtail
-brew install foxtail
+brew install michaelcereda/foxtail/foxtail
 ```
+
+The formula name has to be fully qualified. Homebrew refuses to resolve a bare
+`brew install foxtail` from a third-party tap.
 
 Or from a clone:
 
