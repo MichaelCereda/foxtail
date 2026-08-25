@@ -30,11 +30,14 @@ work           1056   up         me@work.example              7
 personal       1055   up         me@personal.example          6
 
 $ foxtail ssh work build-box
-foxtail forward work build-box 5901:5900   # for apps that cannot use a proxy
 me@build-box:~$
 
 $ foxtail exec personal curl -s http://nas:8080/health
 {"status":"ok"}
+
+$ foxtail forward personal mac-mini 5901:5900
+127.0.0.1:5901 -> mac-mini:5900 (via personal)
+screen sharing:  open vnc://localhost:5901
 ```
 
 [issue]: https://github.com/tailscale/tailscale/issues/183
@@ -100,6 +103,7 @@ foxtail up work               # start the daemon and log in
 foxtail down work             # stop the daemon, keep the login
 foxtail exec work curl http://intranet/
 foxtail ssh work build-box
+foxtail forward work mac-mini 5901:5900   # loopback port for apps that ignore proxies
 foxtail rm work               # stop and delete state (asks first)
 foxtail enable work           # start at login, restart on crash (launchd)
 foxtail disable work          # stop starting automatically
@@ -157,6 +161,55 @@ as "this traffic is being relayed" when there is no connection at all.
 
 Node names come from MagicDNS rather than the reported hostname, so iOS devices
 show up under their real names instead of `localhost`.
+
+### Pointing other tools at a tailnet
+
+`exec` is a thin wrapper around proxy environment variables, so anything that
+respects them works:
+
+```sh
+foxtail exec work psql "postgres://db.internal/app"
+foxtail exec work git clone git@git.internal:team/repo.git
+eval "$(foxtail exec work env | grep PROXY)"    # or set them for a whole shell
+```
+
+Note the proxy speaks `socks5h`, not `socks5` — the `h` makes the daemon resolve
+MagicDNS names. Plain `socks5` would ask your Mac, which knows nothing about
+those tailnets.
+
+### Screen sharing, GUI clients, and other apps that ignore proxies
+
+Screen Sharing, database GUIs, and most native clients ignore proxy settings
+entirely, so they cannot reach a proxied tailnet — there is no route to
+`100.64.0.0/10` for them to use. Give them a plain loopback port instead:
+
+```console
+$ foxtail forward personal mac-mini.tail3d4e5f.ts.net 5901:5900
+127.0.0.1:5901 -> mac-mini.tail3d4e5f.ts.net:5900 (via personal)
+screen sharing:  open vnc://localhost:5901
+Ctrl-C to stop.
+```
+
+Then point the app at `127.0.0.1:5901`. This rides SSH, so the target node has
+to accept your SSH key — which is usually true of the machines you would want to
+screen-share into anyway.
+
+The forward reconnects on its own. A laptop sleeping, or a peer changing network
+path, drops the SSH connection silently, and without this the local port stays
+open while going nowhere — the app just stops working with no explanation.
+Ctrl-C ends it for good.
+
+Run it in the background if you do not want to give it a terminal:
+
+```sh
+foxtail forward personal mac-mini.tail3d4e5f.ts.net 5901:5900 &
+```
+
+It will not survive a reboot; there is no launchd agent for forwards the way
+there is for tailnets.
+
+Note that macOS Screen Sharing also advertises UDP 3283 for Apple Remote
+Desktop; that will not work, but plain VNC on 5900 is all Screen Sharing needs.
 
 ### Surviving reboots
 
@@ -238,55 +291,6 @@ The key is never passed as a command-line argument — `foxtail` writes it to a
 `0600` temporary file and hands `tailscale` a `file:` reference, so it does not
 show up in `ps` for other users on the machine.
 
-### Pointing other tools at a tailnet
-
-`exec` is a thin wrapper around proxy environment variables, so anything that
-respects them works:
-
-```sh
-foxtail exec work psql "postgres://db.internal/app"
-foxtail exec work git clone git@git.internal:team/repo.git
-eval "$(foxtail exec work env | grep PROXY)"    # or set them for a whole shell
-```
-
-Note the proxy speaks `socks5h`, not `socks5` — the `h` makes the daemon resolve
-MagicDNS names. Plain `socks5` would ask your Mac, which knows nothing about
-those tailnets.
-
-### Apps that cannot use a proxy
-
-Screen Sharing, database GUIs, and most native clients ignore proxy settings
-entirely, so they cannot reach a proxied tailnet — there is no route to
-`100.64.0.0/10` for them to use. Give them a plain loopback port instead:
-
-```console
-$ foxtail forward personal mac-mini.tail3d4e5f.ts.net 5901:5900
-127.0.0.1:5901 -> mac-mini.tail3d4e5f.ts.net:5900 (via personal)
-screen sharing:  open vnc://localhost:5901
-Ctrl-C to stop.
-```
-
-Then point the app at `127.0.0.1:5901`. This rides SSH, so the target node has
-to accept your SSH key — which is usually true of the machines you would want to
-screen-share into anyway.
-
-The forward reconnects on its own. A laptop sleeping, or a peer changing network
-path, drops the SSH connection silently, and without this the local port stays
-open while going nowhere — the app just stops working with no explanation.
-Ctrl-C ends it for good.
-
-Run it in the background if you do not want to give it a terminal:
-
-```sh
-foxtail forward personal mac-mini.tail3d4e5f.ts.net 5901:5900 &
-```
-
-It will not survive a reboot; there is no launchd agent for forwards the way
-there is for tailnets.
-
-Note that macOS Screen Sharing also advertises UDP 3283 for Apple Remote
-Desktop; that will not work, but plain VNC on 5900 is all Screen Sharing needs.
-
 ## Limits
 
 Worth understanding before you commit to this.
@@ -299,7 +303,7 @@ Worth understanding before you commit to this.
 | UDP | ✅ | ❌ |
 | Subnet routes, exit nodes | ✅ | ❌ |
 | Taildrop, file sharing | ✅ | ❌ |
-| Apps that ignore proxy env vars | ✅ | ❌ |
+| Apps that ignore proxy env vars | ✅ | ❌ — use [`forward`](#screen-sharing-gui-clients-and-other-apps-that-ignore-proxies) |
 | Inbound connections to your Mac | ✅ | only via `tailscale serve` |
 
 **Keep the tailnet you need full IP access to on the GUI app.** If it serves
