@@ -63,16 +63,30 @@ ephemeral port and never collides with the GUI app's `41641`.
 
 ## Install
 
-You need the Tailscale GUI app **and** the CLI daemon binary, plus `jq`:
-
 ```sh
-brew install tailscale jq          # provides tailscaled; keep Tailscale.app too
+brew tap michaelcereda/foxtail https://github.com/MichaelCereda/foxtail
+brew install foxtail
 ```
 
+Or from a clone:
+
 ```sh
-git clone git@github.com:MichaelCereda/foxtail.git ~/Projects/foxtail
+git clone https://github.com/MichaelCereda/foxtail.git ~/Projects/foxtail
 ln -s ~/Projects/foxtail/bin/foxtail ~/.local/bin/foxtail
-foxtail selftest
+```
+
+Either way, foxtail needs the Tailscale **GUI app** for the native tailnet and
+the **`tailscaled` binary** for the extra ones, plus `jq`. Homebrew pulls in the
+latter two; install the app separately if you do not have it:
+
+```sh
+brew install --cask tailscale-app
+```
+
+Then check everything is in place:
+
+```sh
+foxtail doctor
 ```
 
 ## Usage
@@ -117,13 +131,13 @@ every tailnet you are connected to, in one table:
 $ foxtail nodes
   NODE                                   IP              OS     STATE         LINK
 
-(GUI app) (native) — lab.example.com
-  fileserver.hq.example                 100.64.0.1      linux  online        idle
-  laptop.hq.example                   100.64.0.4      macOS  online        -  ← this Mac
+(GUI app) (native) — headscale.example.com
+  fileserver.hq.example                  100.64.0.1      linux  online        idle
+  laptop.hq.example                      100.64.0.4      macOS  online        -  ← this Mac
 
 work (port 1056) — me@work.example
   build-box.tail0a1b2c.ts.net            100.81.10.48   linux  online        relay nyc
-  git.tail0a1b2c.ts.net                100.125.10.78   linux  online        idle
+  git.tail0a1b2c.ts.net                  100.125.10.78   linux  online        idle
   old-laptop.tail0a1b2c.ts.net           100.96.10.19   macOS  offline 08-20 -
 
 personal (port 1055) — me@personal.example
@@ -344,6 +358,13 @@ appears before the backend has finished starting. Give it a few seconds and run
 **Connections refused on a node you can `tailscale ping`.** Ping proves the
 WireGuard path; refusal is above it. Either nothing is listening on that port,
 or the tailnet's ACLs don't grant this new node access to that service.
+
+## Using foxtail from an agent
+
+Automated callers — coding agents, CI jobs, scripts — should read
+[AGENTS.md](AGENTS.md). It covers driving foxtail non-interactively, unattended
+login with an auth key, machine-readable state, and the failure modes worth
+knowing before debugging.
 
 ## Contributing
 
