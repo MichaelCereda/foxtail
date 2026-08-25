@@ -211,6 +211,63 @@ there is for tailnets.
 Note that macOS Screen Sharing also advertises UDP 3283 for Apple Remote
 Desktop; that will not work, but plain VNC on 5900 is all Screen Sharing needs.
 
+### Worked example: a shell and a screen on a machine you cannot route to
+
+Say the Mac you want is on your personal tailnet, while your laptop's native
+tailnet is something else entirely. Start by finding it — never guess the name,
+and copy the full one:
+
+```console
+$ foxtail nodes personal
+  NODE                                   IP              OS     STATE         LINK
+
+personal (port 1055) — me@personal.example
+  mac-mini.tail3d4e5f.ts.net             100.98.14.22    macOS  online        idle
+  nas.tail3d4e5f.ts.net                  100.124.10.50  linux  online        idle
+  phone.tail3d4e5f.ts.net                100.65.10.92   iOS    online        idle
+```
+
+A shell is immediate — `ssh` is proxy-aware once foxtail wraps it, and MagicDNS
+names work:
+
+```console
+$ foxtail ssh personal mac-mini.tail3d4e5f.ts.net
+me@mac-mini ~ %
+```
+
+Use that shell to confirm the service is actually listening before you go
+hunting for network problems that do not exist:
+
+```console
+$ foxtail ssh personal mac-mini.tail3d4e5f.ts.net "netstat -an | grep '\.5900' | grep LISTEN"
+tcp4       0      0  *.5900                 *.*                    LISTEN
+tcp6       0      0  *.5900                 *.*                    LISTEN
+```
+
+Screen Sharing itself cannot use the proxy, so give it a loopback port. Leave
+this running in its own terminal:
+
+```console
+$ foxtail forward personal mac-mini.tail3d4e5f.ts.net 5901:5900
+127.0.0.1:5901 -> mac-mini.tail3d4e5f.ts.net:5900 (via personal)
+screen sharing:  open vnc://localhost:5901
+Ctrl-C to stop.
+```
+
+Then connect. Screen Sharing has no idea a tailnet is involved:
+
+```sh
+open vnc://localhost:5901
+```
+
+Port 5901 rather than 5900 on the local side, because your own Mac may well be
+listening on 5900 itself. `forward` refuses a port that is already in use rather
+than shadowing it.
+
+The same three steps work for anything else with a GUI client — a database
+browser on `5432`, an admin console on `8080`. Find the node, confirm the
+service over `ssh`, forward the port.
+
 ### Surviving reboots
 
 `foxtail enable <name>` writes a per-tailnet launchd agent to
