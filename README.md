@@ -100,7 +100,7 @@ foxtail selftest              # assert foxtail's own helpers still work
 | `up <name> [port]` | Starts a userspace daemon and logs in. Picks the lowest free port from 1055 if you don't name one |
 | `down <name>` | Stops the daemon. The login survives, so `up` reconnects without re-authenticating |
 | `exec <name> cmd…` | Runs any command with `ALL_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` pointed at that tailnet |
-| `forward <name> host <local>:<remote>` | Exposes a remote port on `127.0.0.1` for apps that ignore proxy settings. Rides SSH, so the node must accept your key |
+| `forward <name> host <local>:<remote>` | Exposes a remote port on `127.0.0.1` for apps that ignore proxy settings. Reconnects if the tunnel drops. Rides SSH, so the node must accept your key |
 | `ssh <name> host` | `ssh` through that tailnet's proxy, so MagicDNS names work |
 | `rm <name>` | Stops the daemon and deletes its local state |
 | `enable <name>` | Installs a launchd agent so the tailnet starts at login and restarts if it crashes |
@@ -255,6 +255,20 @@ Ctrl-C to stop.
 Then point the app at `127.0.0.1:5901`. This rides SSH, so the target node has
 to accept your SSH key — which is usually true of the machines you would want to
 screen-share into anyway.
+
+The forward reconnects on its own. A laptop sleeping, or a peer changing network
+path, drops the SSH connection silently, and without this the local port stays
+open while going nowhere — the app just stops working with no explanation.
+Ctrl-C ends it for good.
+
+Run it in the background if you do not want to give it a terminal:
+
+```sh
+foxtail forward personal mac-mini.tail3d4e5f.ts.net 5901:5900 &
+```
+
+It will not survive a reboot; there is no launchd agent for forwards the way
+there is for tailnets.
 
 Note that macOS Screen Sharing also advertises UDP 3283 for Apple Remote
 Desktop; that will not work, but plain VNC on 5900 is all Screen Sharing needs.

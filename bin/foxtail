@@ -14,7 +14,8 @@
 #   foxtail ssh <name> host    ssh into a node on that tailnet
 #   foxtail forward <name> host <local>:<remote>
 #                              expose a remote port on 127.0.0.1 for apps that
-#                              cannot use a proxy (Screen Sharing, VNC, GUI clients)
+#                              cannot use a proxy (Screen Sharing, VNC, GUI
+#                              clients); reconnects if the tunnel drops
 #   foxtail rm <name>          stop and delete its state
 #   foxtail enable <name>      start automatically at login (launchd), restart on crash
 #   foxtail disable <name>     stop starting automatically
@@ -379,9 +380,20 @@ cmd_forward() {
     *)    echo "connect to:      127.0.0.1:$lport" ;;
   esac
   echo "Ctrl-C to stop."
-  ssh -N -o ProxyCommand="nc -X 5 -x 127.0.0.1:$p %h %p" \
-      -o ExitOnForwardFailure=yes \
-      -L "$lport:localhost:$rport" "$host"
+
+  # A laptop sleeping, or the peer changing path, kills the tunnel silently and
+  # the app just stops working. Reconnect rather than leave a dead port.
+  trap 'echo; echo "forward closed"; exit 0' INT TERM
+  local first=1
+  while :; do
+    [ "$first" = 1 ] || echo "reconnecting…"
+    first=0
+    ssh -N -o ProxyCommand="nc -X 5 -x 127.0.0.1:$p %h %p" \
+        -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+        -L "$lport:localhost:$rport" "$host" || true
+    sleep 2
+  done
 }
 
 # ---------------------------------------------------------------- doctor ----
