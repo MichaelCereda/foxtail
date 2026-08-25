@@ -140,13 +140,13 @@ $ foxtail nodes
   laptop.hq.example                      100.64.0.4      macOS  online        -  ← this Mac
 
 work (port 1056) — me@work.example
-  build-box.tail0a1b2c.ts.net            100.81.10.48   linux  online        relay nyc
+  build-box.tail0a1b2c.ts.net            100.81.10.48    linux  online        relay nyc
   git.tail0a1b2c.ts.net                  100.125.10.78   linux  online        idle
-  old-laptop.tail0a1b2c.ts.net           100.96.10.19   macOS  offline 08-20 -
+  old-laptop.tail0a1b2c.ts.net           100.96.10.19    macOS  offline 08-20 -
 
 personal (port 1055) — me@personal.example
   nas.tail3d4e5f.ts.net                  100.98.14.22    macOS  online        direct 192.168.1.50
-  phone.tail3d4e5f.ts.net                100.65.10.92   iOS    online        idle
+  phone.tail3d4e5f.ts.net                100.65.10.92    iOS    online        idle
 ```
 
 Names are printed in full so they can be copied straight into `foxtail ssh` or a
@@ -223,8 +223,8 @@ $ foxtail nodes personal
 
 personal (port 1055) — me@personal.example
   mac-mini.tail3d4e5f.ts.net             100.98.14.22    macOS  online        idle
-  nas.tail3d4e5f.ts.net                  100.124.10.50  linux  online        idle
-  phone.tail3d4e5f.ts.net                100.65.10.92   iOS    online        idle
+  nas.tail3d4e5f.ts.net                  100.124.10.50   linux  online        idle
+  phone.tail3d4e5f.ts.net                100.65.10.92    iOS    online        idle
 ```
 
 A shell is immediate — `ssh` is proxy-aware once foxtail wraps it, and MagicDNS
