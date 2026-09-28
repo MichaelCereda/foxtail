@@ -10,12 +10,24 @@
 #   foxtail nodes [name]       list nodes on every tailnet (or just one) with their IPs
 #   foxtail up <name> [port]   start + log in   (env TS_AUTHKEY=tskey-... to skip browser)
 #   foxtail down <name>        stop the daemon (keeps login)
+#   foxtail <name> [cmd…]      run cmd on that tailnet — ssh, scp, git, rsync, curl,
+#                              open vnc://host, et; no cmd opens a proxied shell
 #   foxtail exec <name> cmd…   run cmd with ALL_PROXY pointed at that tailnet
-#   foxtail ssh <name> host    ssh into a node on that tailnet
+#   foxtail ssh <name> host    ssh into a node on that tailnet (same as: foxtail <name> ssh host)
+#   foxtail nc [name] host port
+#                              raw pipe to host:port, for ssh's ProxyCommand; the
+#                              tailnet comes from the name (host.<name>, host.tailXXXX.ts.net)
+#   foxtail owns <host>        succeed if host belongs to a foxtail tailnet, for ssh's Match exec
+#   foxtail et [opts] host     et to host.<name>; any other host goes to plain et
+#   foxtail open vnc://host.<name>
+#                              screen sharing; any other URL goes to plain open
+#   foxtail init [--et] [--vnc]
+#                              shell functions for your rc file, each opt-in:
+#                              eval "$(foxtail init --et --vnc)"
 #   foxtail forward <name> host <local>:<remote>
 #                              expose a remote port on 127.0.0.1 for apps that
 #                              cannot use a proxy (Screen Sharing, VNC, GUI
-#                              clients); reconnects if the tunnel drops
+#                              clients); plain TCP, needs no ssh on the node
 #   foxtail rm <name>          stop and delete its state
 #   foxtail enable <name>      start automatically at login (launchd), restart on crash
 #   foxtail disable <name>     stop starting automatically
@@ -37,6 +49,22 @@ valid_name() {
   esac
 }
 checkname() { valid_name "${1:-}" || die "invalid tailnet name: '${1:-}' (use letters, digits, . _ -)"; }
+
+# `foxtail <name> …` dispatches on the name, so a tailnet must not shadow a command
+VERBS=" ls list nodes up down rm exec ssh nc owns et open init forward enable disable doctor selftest menu help "
+reserved() { case $VERBS in *" $1 "*) return 0 ;; esac; return 1; }
+newname() {
+  checkname "${1:-}"
+  reserved "$1" && die "'$1' is a foxtail command, pick another tailnet name"
+  return 0
+}
+
+# host names reach tailscale and ssh's shell, so hold them to DNS/IP characters
+valid_host() { [[ ${1:-} =~ ^[A-Za-z0-9:][A-Za-z0-9._:-]*$ ]]; }
+
+# absolute path to this script, for the ProxyCommand lines ssh runs later
+self=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
+pc() { printf 'ProxyCommand=%q %s nc %s %%p' "$self" "$1" "${2:-%h}"; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1${2:+ ($2)}"; }
 
@@ -65,13 +93,37 @@ names() {
 
 running() { pgrep -qf -- "--socket=$(sock "$1")"; }
 
-freeport() {
-  local p=1055
-  while lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; do
+listening() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+
+freeport() {  # [first port to try]
+  local first=${1:-1055} p=${1:-1055}
+  while listening "$p"; do
     p=$((p+1))
-    [ "$p" -lt 1200 ] || die "no free port between 1055 and 1200"
+    [ "$p" -lt $((first+145)) ] || die "no free port between $first and $p"
   done
   printf '%s' "$p"
+}
+
+# a tailnet's MagicDNS suffix (tailXXXX.ts.net), cached so `owns` never waits on a daemon
+suffix() {
+  local f s; f="$(dir "$1")/suffix"
+  if [ ! -s "$f" ] && running "$1"; then
+    s=$(ts "$1" status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty' 2>/dev/null) || true
+    [ -z "$s" ] || printf '%s\n' "$s" > "$f"
+  fi
+  cat "$f" 2>/dev/null || true
+}
+
+# which tailnet a host belongs to: bigtaco.<name>, or bigtaco.tailXXXX.ts.net
+owner() {
+  local h=${1%.} n s
+  n=${h##*.}
+  if [ "$n" != "$h" ] && valid_name "$n" && [ -d "$(dir "$n")" ]; then printf '%s' "$n"; return 0; fi
+  for n in $(names); do
+    s=$(suffix "$n")
+    [ -n "$s" ] && case $h in *."$s") printf '%s' "$n"; return 0 ;; esac
+  done
+  return 1
 }
 
 account() { ts "$1" status --json 2>/dev/null | jq -r '.User[.Self.UserID|tostring].LoginName // .MagicDNSSuffix // "-"'; }
@@ -95,7 +147,7 @@ lc_stop() {
 }
 
 cmd_enable() {
-  local n=${1:-}; checkname "$n"
+  local n=${1:-}; newname "$n"
   need tailscaled "brew install tailscale"
   local p bin
   p=$(port "$n") || true
@@ -244,7 +296,7 @@ cmd_nodes() {
 
 cmd_up() {
   local n=${1:-} p=${2:-}
-  checkname "$n"
+  newname "$n"
   need tailscaled "brew install tailscale"
   need tailscale
   if [ -n "$p" ]; then
@@ -336,44 +388,168 @@ cmd_exec() {
   local n=${1:-}; checkname "$n"
   local p; p=$(port "$n") || true
   [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
+  running "$n" || die "$n is not running (foxtail up $n)"
   shift
   [ $# -gt 0 ] || die "usage: foxtail exec <name> cmd…"
+  local b; b=$(ssh_wrapper "$n")
   # socks5h — the 'h' makes the daemon resolve MagicDNS names; plain socks5 asks the Mac, which cannot.
   # 127.0.0.1 rather than localhost: the proxy is IPv4-only, and clients that try ::1 first eat a refusal.
-  ALL_PROXY="socks5h://127.0.0.1:$p" HTTPS_PROXY="http://127.0.0.1:$p" HTTP_PROXY="http://127.0.0.1:$p" "$@"
+  PATH="$b:$PATH" ALL_PROXY="socks5h://127.0.0.1:$p" HTTPS_PROXY="http://127.0.0.1:$p" HTTP_PROXY="http://127.0.0.1:$p" "$@"
+}
+
+# ssh ignores proxy env vars, so exec puts this wrapper first on PATH. git,
+# rsync and et look `ssh` up on PATH, so they pick it up without being told.
+ssh_wrapper() {
+  local b real="" c
+  b="$(dir "$1")/bin"
+  # skip our own wrappers, or a nested `foxtail <name>` shell would loop
+  while IFS= read -r c; do
+    case "$c" in "$pre"*) ;; *) real=$c; break ;; esac
+  done < <(type -ap ssh)
+  [ -n "$real" ] || die "ssh not found"
+  mkdir -p "$b"
+  printf '#!/bin/bash\nexec %q -o %q "$@"\n' "$real" "$(pc "$1")" > "$b/ssh.$$"
+  chmod 755 "$b/ssh.$$"
+  mv -f "$b/ssh.$$" "$b/ssh"
+  printf '%s' "$b"
 }
 
 cmd_ssh() {
   local n=${1:-}; checkname "$n"
-  need nc
-  local p; p=$(port "$n") || true
-  [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
   shift
   [ $# -gt 0 ] || die "usage: foxtail ssh <name> host"
-  ssh -o ProxyCommand="nc -X 5 -x 127.0.0.1:$p %h %p" "$@"
+  cmd_in "$n" ssh "$@"
+}
+
+# The transport under every ssh foxtail runs. An explicit suffix wins over the
+# tailnet it was called with, so bigtaco.work goes to work from any shell.
+cmd_nc() {  # name-or-empty host port
+  local n=${1:-} h=${2:-} p=${3:-} o
+  [ -n "$h" ] && [ -n "$p" ] || die "usage: foxtail [name] nc host port"
+  case "$p" in *[!0-9]*) die "bad port: $p" ;; esac
+  valid_host "$h" || die "bad host: $h"
+  if o=$(owner "$h"); then n=$o; fi
+  [ -n "$n" ] || die "$h is not on any foxtail tailnet (name one: foxtail <name> nc $h $p)"
+  checkname "$n"
+  [ -d "$(dir "$n")" ] || die "no such tailnet: $n (try: foxtail ls)"
+  running "$n" || die "$n is not running (foxtail up $n)"
+  h=${h%.}; h=${h%."$n"}
+  exec tailscale --socket="$(sock "$n")" nc "$h" "$p"
+}
+
+# prints the tailnet so a human can use it too; ssh discards Match exec output
+cmd_owns() { owner "${1:-}" && echo; }
+
+# foxtail <name> [cmd…] — the natural form. Most commands only need exec; the
+# ones below ignore proxies in ways exec cannot fix, so they are rewritten.
+cmd_in() {
+  local n=$1; shift
+  case "${1:-}" in
+    "")       echo "proxy env set for $n — exit to come back" >&2
+              cmd_exec "$n" "${SHELL:-/bin/bash}" ;;
+    nc)       shift; cmd_nc "$n" "$@" ;;
+    # scp and sftp run /usr/bin/ssh by absolute path, so the PATH wrapper misses them
+    scp|sftp) local c=$1; shift; cmd_exec "$n" "$c" -o "$(pc "$n")" "$@" ;;
+    open)     case "${2:-}" in
+                vnc://*) open_vnc "$n" "$2" ;;
+                *)       cmd_exec "$n" "$@" ;;
+              esac ;;
+    et)       shift; run_et "$n" "$@" ;;
+    *)        cmd_exec "$n" "$@" ;;
+  esac
+}
+
+# Printed for `eval "$(foxtail init …)"`, like zoxide or direnv, so the code
+# ships with foxtail and never goes stale in someone's rc file. Nothing is on
+# by default: each wrapper shadows a command people already use. `function x {`
+# rather than `x() {` because zsh refuses the latter when an alias x exists.
+cmd_init() {
+  local f q=""; printf -v q '%q' "$self"
+  [ $# -gt 0 ] || { echo "foxtail init: nothing selected — pick from --et --vnc" >&2; return 0; }
+  for f in "$@"; do
+    case "$f" in
+      --et)  echo "function et { $q et \"\$@\"; }" ;;
+      --vnc) echo "function open { case \"\${1:-}\" in vnc://*) $q open \"\$@\" ;; *) command open \"\$@\" ;; esac; }" ;;
+      *)     die "init: unknown option $f (use --et, --vnc)" ;;
+    esac
+  done
+}
+
+# Screen Sharing gets the URL from LaunchServices, not from us, so it never sees
+# the proxy. Hand it a loopback forward instead, kept up until Ctrl-C.
+open_vnc() {
+  local n=$1 rest=${2#vnc://} user="" host rport=5900 lport
+  rest=${rest%%[/?]*}
+  case "$rest" in *@*) user=${rest%@*}@; rest=${rest##*@} ;; esac
+  host=${rest%%:*}
+  [ "$host" = "$rest" ] || rport=${rest#*:}
+  local o; if o=$(owner "$host"); then n=$o; fi
+  [ -n "$n" ] || exec open "$2"
+  valid_host "$host" || die "usage: foxtail <name> open vnc://[user@]host[:port]"
+  lport=$(freeport 5901)
+  ( i=0
+    until listening "$lport" || [ $i -ge 40 ]; do sleep 0.5; i=$((i+1)); done
+    listening "$lport" && open "vnc://${user}127.0.0.1:$lport" ) &
+  cmd_forward "$n" "$host" "$lport:$rport"
+}
+
+# et bootstraps over ssh, then opens its own TCP connection to host:2022 that
+# no proxy setting reaches. Forward that port to loopback and point et at it,
+# with ssh pinned to the real host and HostKeyAlias keeping known_hosts right.
+# The forward is plain TCP, so et's own reconnects survive sleep and roaming.
+run_et() {  # name-or-empty et-args…
+  local n=$1; shift
+  [ $# -gt 0 ] || die "usage: foxtail [name] et [options] [user@]host[:port]"
+  local all=("$@") dest=${!#} eport=2022 user="" host lport fpid i=0 o opts=()
+  set -- "${@:1:$(($# - 1))}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p|--port) [ $# -ge 2 ] || die "$1 needs a value"; eport=$2; shift 2 ;;
+      --port=*)  eport=${1#--port=}; shift ;;
+      *)         opts+=("$1"); shift ;;
+    esac
+  done
+  case "$dest" in *@*) user=${dest%@*}@; dest=${dest##*@} ;; esac
+  host=${dest%%:*}
+  [ "$host" = "$dest" ] || eport=${dest#*:}
+  # not a foxtail host: be plain et, so `et() { foxtail et "$@"; }` is safe for every host
+  if o=$(owner "$host"); then n=$o; fi
+  [ -n "$n" ] || exec et "${all[@]}"
+  valid_host "$host" || die "bad host: $host"
+  case "$eport" in ''|*[!0-9]*) die "bad et port: $eport" ;; esac
+  need et "brew install MisterTea/et/et"
+  running "$n" || die "$n is not running (foxtail up $n)"
+
+  lport=$(freeport 20220)
+  cmd_forward "$n" "$host" "$lport:$eport" >/dev/null 2>&1 &
+  fpid=$!
+  # socat forks one child per connection; stop those before the listener
+  trap 'pkill -P '"$fpid"' 2>/dev/null; kill '"$fpid"' 2>/dev/null' EXIT
+  until listening "$lport" || [ $i -ge 30 ]; do sleep 0.5; i=$((i+1)); done
+  listening "$lport" || die "could not start a local forward for $host:$eport"
+
+  et ${opts[@]+"${opts[@]}"} \
+    --ssh-option "$(pc "$n" "$host")" --ssh-option "HostKeyAlias=$host" \
+    -p "$lport" "${user}127.0.0.1"
 }
 
 # Apps that ignore proxy settings — Screen Sharing, database GUIs, most native
 # clients — cannot reach a proxied tailnet at all. A local forward gives them a
-# plain 127.0.0.1 port to talk to. This rides SSH, so the target node must
-# accept your SSH key.
+# plain 127.0.0.1 port to talk to.
 cmd_forward() {
   local n=${1:-} host=${2:-} spec=${3:-}
   checkname "$n"
   [ -n "$host" ] && [ -n "$spec" ] || die "usage: foxtail forward <name> <host> <local>:<remote>"
-  need nc
+  valid_host "$host" || die "bad host: $host"
   local lport rport
   lport=${spec%%:*}; rport=${spec##*:}
   case "$lport" in ''|*[!0-9]*) die "bad local port: $lport" ;; esac
   case "$rport" in ''|*[!0-9]*) die "bad remote port: $rport" ;; esac
   [ "$lport" = "$spec" ] && die "usage: foxtail forward <name> <host> <local>:<remote>"
+  need socat "brew install socat"
 
-  local p; p=$(port "$n") || true
-  [ -n "$p" ] || die "unknown or unstarted tailnet: $n"
-
-  if lsof -nP -iTCP:"$lport" -sTCP:LISTEN >/dev/null 2>&1; then
-    die "local port $lport is already in use"
-  fi
+  running "$n" || die "$n is not running (foxtail up $n)"
+  listening "$lport" && die "local port $lport is already in use"
 
   echo "127.0.0.1:$lport -> $host:$rport (via $n)"
   case "$rport" in
@@ -384,19 +560,16 @@ cmd_forward() {
   esac
   echo "Ctrl-C to stop."
 
-  # A laptop sleeping, or the peer changing path, kills the tunnel silently and
-  # the app just stops working. Reconnect rather than leave a dead port.
-  trap 'echo; echo "forward closed"; exit 0' INT TERM
-  local first=1
-  while :; do
-    [ "$first" = 1 ] || echo "reconnecting…"
-    first=0
-    ssh -N -o ProxyCommand="nc -X 5 -x 127.0.0.1:$p %h %p" \
-        -o ExitOnForwardFailure=yes \
-        -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-        -L "$lport:localhost:$rport" "$host" || true
-    sleep 2
-  done
+  # One `foxtail nc` per incoming connection, straight through the tailnet.
+  # Nothing is held open between connections, so a laptop sleeping or the
+  # daemon restarting only breaks what was open at the time — the next
+  # connection just works. No ssh, so the node needs no key and no sshd.
+  # socat strips one layer of quotes and escapes from its addresses, so no
+  # quoting survives: put foxtail's directory on PATH and name it bare (the
+  # directory may contain spaces), and escape the colons of an IPv6 host.
+  PATH="$(dirname "$self"):$PATH" exec socat -d0 \
+    TCP-LISTEN:"$lport",bind=127.0.0.1,fork,reuseaddr \
+    EXEC:"$(basename "$self") nc $n ${host//:/\\:} $rport"
 }
 
 # ---------------------------------------------------------------- doctor ----
@@ -413,10 +586,9 @@ cmd_doctor() {
 
   echo "dependencies"
   local c
-  for c in tailscale tailscaled jq lsof; do
+  for c in tailscale tailscaled jq lsof socat; do
     if command -v "$c" >/dev/null 2>&1; then ok "$c ($(command -v "$c"))"; else bad "$c not found"; fi
   done
-  command -v nc >/dev/null 2>&1 && ok "nc (needed by foxtail ssh)" || warn "nc not found — foxtail ssh will not work"
 
   echo
   echo "native tailnet"
@@ -470,6 +642,18 @@ cmd_doctor() {
   done
 
   echo
+  echo "ssh"
+  local first; first=$(for n in $list; do running "$n" && { echo "$n"; break; }; done)
+  if [ -z "$first" ]; then
+    :
+  elif ssh -G "foxtail-probe.$first" 2>/dev/null | grep -q '^proxycommand .*foxtail.* nc '; then
+    ok "ssh config routes host.<tailnet> names through foxtail"
+  else
+    warn "plain 'ssh host.$first' will not work — add near the top of ~/.ssh/config:"
+    printf '          Match exec "foxtail owns %%h"\n            ProxyCommand foxtail nc %%h %%p\n'
+  fi
+
+  echo
   echo "conflicts"
   local dupes
   dupes=$(for n in $list; do port "$n"; echo; done | grep -v '^$' | sort | uniq -d)
@@ -521,6 +705,27 @@ cmd_selftest() {
   done
 
   d=$(freeport); [ "$d" -ge 1055 ] 2>/dev/null || { echo "FAIL freeport: $d"; return 1; }
+  d=$(freeport 5901); [ "$d" -ge 5901 ] 2>/dev/null || { echo "FAIL freeport 5901: $d"; return 1; }
+
+  # a tailnet named after a command would be unreachable through `foxtail <name>`
+  reserved ls && reserved nc && ! reserved work || { echo "FAIL reserved names"; return 1; }
+
+  # owner() routes ssh: by .<name> suffix, by cached MagicDNS suffix, and nothing else
+  mkdir -p "${pre}zzselftest" && printf 'tailzz0.ts.net\n' > "${pre}zzselftest/suffix"
+  local o1 o2 o3 o4
+  o1=$(owner box.zzselftest || true); o2=$(owner box.zzselftest. || true)
+  o3=$(owner box.tailzz0.ts.net || true); o4=$(owner github.com || true)
+  rm -f "${pre}zzselftest/suffix"; rmdir "${pre}zzselftest"
+  [ "$o1" = zzselftest ] && [ "$o2" = zzselftest ] && [ "$o3" = zzselftest ] && [ -z "$o4" ] ||
+    { echo "FAIL owner: '$o1' '$o2' '$o3' '$o4'"; return 1; }
+
+  # host names end up in ssh's shell via ProxyCommand
+  valid_host bigtaco.personal && valid_host 100.64.0.1 && valid_host fd7a::1 ||
+    { echo "FAIL rejected valid host"; return 1; }
+  for bad_ in "" "-oProxyCommand=x" "a b" 'a;b' '$(x)' "a'b"; do
+    valid_host "$bad_" && { echo "FAIL accepted invalid host: '$bad_'"; return 1; }
+  done
+  d=$(pc work); [ "$d" = "ProxyCommand=$self work nc %h %p" ] || { echo "FAIL pc: $d"; return 1; }
 
   d=$(label work); [ "$d" = "com.foxtail.work" ] || { echo "FAIL label: $d"; return 1; }
   d=$(plist work); [ "$d" = "$HOME/Library/LaunchAgents/com.foxtail.work.plist" ] || { echo "FAIL plist: $d"; return 1; }
@@ -572,6 +777,11 @@ case "$cmd" in
   rm)       cmd_rm "$@" ;;
   exec)     cmd_exec "$@" ;;
   ssh)      cmd_ssh "$@" ;;
+  nc)       if [ $# -eq 3 ]; then cmd_nc "$@"; else cmd_nc "" "$@"; fi ;;
+  owns)     cmd_owns "$@" ;;
+  et)       run_et "" "$@" ;;
+  init)     cmd_init "$@" ;;
+  open)     case "${1:-}" in vnc://*) open_vnc "" "$1" ;; *) exec open "$@" ;; esac ;;
   forward)  cmd_forward "$@" ;;
   enable)   cmd_enable "$@" ;;
   disable)  cmd_disable "$@" ;;
@@ -579,5 +789,6 @@ case "$cmd" in
   selftest) cmd_selftest "$@" ;;
   menu)     cmd_menu "$@" ;;
   -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0" ;;
-  *)        die "unknown command: $cmd (try: foxtail --help)" ;;
+  *)        if valid_name "$cmd" && [ -d "$(dir "$cmd")" ]; then cmd_in "$cmd" "$@"
+            else die "unknown command or tailnet: $cmd (try: foxtail ls, foxtail --help)"; fi ;;
 esac

@@ -8,6 +8,7 @@ class Foxtail < Formula
 
   depends_on :macos
   depends_on "jq"
+  depends_on "socat"
   depends_on "tailscale"
 
   def install

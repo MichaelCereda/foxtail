@@ -25,6 +25,20 @@ foxtail exec work kubectl get nodes
 There is no "connect first" step. If the daemon is down, `exec` fails loudly
 rather than silently falling through to the native tailnet.
 
+`exec` also puts an `ssh` wrapper first on `PATH`, so `ssh`, `rsync` and git
+over ssh reach the tailnet too.
+
+`foxtail <tailnet> <cmd…>` is the same thing in a shorter form, plus special
+handling for `scp`, `sftp`, `open vnc://…` and `et`, which no environment
+variable reaches. Prefer `exec` in scripts: it cannot be confused with a
+subcommand, and a mistyped tailnet name fails with "unknown or unstarted
+tailnet".
+
+```bash
+foxtail work ssh build-box 'uname -a'
+foxtail work scp build-box:/var/log/app.log ./
+```
+
 ## Orient before acting
 
 ```bash
@@ -37,6 +51,31 @@ foxtail doctor             # setup and daemon health; run this when exec fails
 it, and never assume the target is on the native tailnet.
 
 All three are safe to run at any time — they read state and change nothing.
+
+## Addressing hosts
+
+Three forms work through foxtail: the short name (`build-box`), the full
+MagicDNS name (`build-box.tail1234.ts.net`), and the foxtail form
+(`build-box.work`). Use the name `foxtail nodes` prints.
+
+`build-box.local` never works: `.local` is mDNS, which only resolves on the
+LAN.
+
+`foxtail et` and `foxtail open vnc://…` take the tailnet from the host name
+the same way, and hand any other host to plain `et` / `open`.
+`foxtail init --et --vnc` prints shell functions that make plain `et` and
+`open vnc://` do this. It is for a human's rc file; call `foxtail et` /
+`foxtail open` directly from scripts, and do not add `init` to a user's rc
+file unless asked.
+
+`foxtail owns <host>` exits 0 and prints the tailnet when a name belongs to a
+foxtail tailnet. `foxtail nc <host> <port>` pipes stdin/stdout to it. The two
+exist so a user's `~/.ssh/config` can route plain `ssh build-box.work` — see
+the README. Do not edit a user's ssh config unless asked.
+
+A tailnet named after a real TLD (`dev`, `app`, `io`) captures that TLD in
+the ssh config. If a real `*.dev` host is unexpectedly sent into a tailnet,
+check `foxtail ls` for such a name.
 
 ## Machine-readable output
 
@@ -148,10 +187,13 @@ so it never appears in `ps`.
 `exec` is a SOCKS5 proxy. It carries **TCP only**.
 
 - `ping` over a foxtail tailnet is not a reachability test. It cannot work. Use
-  the actual TCP call you care about.
+  the actual TCP call you care about, or a banner check:
+  `sleep 2 | foxtail work nc build-box 22 | head -1`.
 - No UDP, no exit-node routing, no subnet routes.
 - Tools that ignore proxy environment variables need
   `foxtail forward <tailnet> <host> <local>:<remote>` and a `127.0.0.1`
-  connection instead.
+  connection instead. `foxtail <tailnet> open vnc://host` does this for Screen
+  Sharing. Both run in the foreground until killed, so background them and
+  clean up after yourself.
 - MagicDNS names resolve inside the proxy, not on the host. `dig` and `host`
   will return NXDOMAIN for them, correctly. Names work fine through `exec`.
