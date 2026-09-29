@@ -76,8 +76,13 @@ brew install michaelcereda/tap/foxtail
 That taps [michaelcereda/homebrew-tap](https://github.com/MichaelCereda/homebrew-tap)
 and installs in one step; `brew upgrade` picks up new releases from then on.
 
-If you installed an earlier version with `brew tap michaelcereda/foxtail …`,
-`brew update` moves it to the new tap for you.
+If you installed v0.1.4 or earlier with `brew tap michaelcereda/foxtail …`,
+switch to the new tap once:
+
+```sh
+brew uninstall foxtail && brew untap michaelcereda/foxtail
+brew install michaelcereda/tap/foxtail
+```
 
 Or from a clone:
 
@@ -598,6 +603,18 @@ and `rm -rf`, so they are validated as a trust boundary — letters, digits,
 the shell ssh runs `ProxyCommand` with, so they are held to DNS and IP
 characters. `selftest` asserts both the accepted and rejected cases; please
 keep it that way.
+
+### Releasing
+
+The formula lives in [michaelcereda/homebrew-tap](https://github.com/MichaelCereda/homebrew-tap).
+The release tarball is a plain `git archive`:
+
+```sh
+git tag -a vX.Y.Z -m "foxtail vX.Y.Z" && git push origin main vX.Y.Z
+git archive --format=tar.gz --prefix=foxtail-X.Y.Z/ vX.Y.Z > foxtail-X.Y.Z.tar.gz
+gh release create vX.Y.Z foxtail-X.Y.Z.tar.gz --title "foxtail vX.Y.Z"
+shasum -a 256 foxtail-X.Y.Z.tar.gz   # then bump url + sha256 in the tap's Formula/foxtail.rb
+```
 
 ## License
 
