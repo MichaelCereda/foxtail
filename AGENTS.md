@@ -79,8 +79,9 @@ check `foxtail ls` for such a name.
 
 ## Machine-readable output
 
-`ls`, `nodes` and `doctor` print aligned columns for humans. To branch on state,
-query the daemon directly rather than parsing them:
+`ls`, `nodes` and `doctor` print aligned columns for humans. Every `nodes` line
+carries its tailnet, so `foxtail nodes | grep build-box` is safe for a quick
+look. To branch on state, query the daemon directly rather than parsing them:
 
 ```bash
 # is a tailnet up and logged in?

@@ -5,34 +5,27 @@
 # Every extra tailnet runs here as a userspace tailscaled behind a local SOCKS5/HTTP
 # proxy, so nothing fights over the routing table, DNS, or 100.64.0.0/10.
 #
-#   foxtail                    interactive menu
-#   foxtail ls                 show every tailnet and its state
-#   foxtail nodes [name]       list nodes on every tailnet (or just one) with their IPs
-#   foxtail up <name> [port]   start + log in   (env TS_AUTHKEY=tskey-... to skip browser)
-#   foxtail down <name>        stop the daemon (keeps login)
-#   foxtail <name> [cmd…]      run cmd on that tailnet — ssh, scp, git, rsync, curl,
-#                              open vnc://host, et; no cmd opens a proxied shell
-#   foxtail exec <name> cmd…   run cmd with ALL_PROXY pointed at that tailnet
-#   foxtail ssh <name> host    ssh into a node on that tailnet (same as: foxtail <name> ssh host)
-#   foxtail nc [name] host port
-#                              raw pipe to host:port, for ssh's ProxyCommand; the
-#                              tailnet comes from the name (host.<name>, host.tailXXXX.ts.net)
-#   foxtail owns <host>        succeed if host belongs to a foxtail tailnet, for ssh's Match exec
-#   foxtail et [opts] host     et to host.<name>; any other host goes to plain et
-#   foxtail open vnc://host.<name>
-#                              screen sharing; any other URL goes to plain open
-#   foxtail init [--et] [--vnc]
-#                              shell functions for your rc file, each opt-in:
-#                              eval "$(foxtail init --et --vnc)"
-#   foxtail forward <name> host <local>:<remote>
-#                              expose a remote port on 127.0.0.1 for apps that
-#                              cannot use a proxy (Screen Sharing, VNC, GUI
-#                              clients); plain TCP, needs no ssh on the node
-#   foxtail rm <name>          stop and delete its state
-#   foxtail enable <name>      start automatically at login (launchd), restart on crash
-#   foxtail disable <name>     stop starting automatically
-#   foxtail doctor             check this machine's setup and daemon health
-#   foxtail selftest           assert foxtail's own helpers still work
+#   One line per command, so `foxtail --help | grep <word>` shows the whole entry.
+#
+#   foxtail                                   interactive menu
+#   foxtail ls                                every tailnet and its state
+#   foxtail nodes [name]                      every node, one per line, tailnet first: grep-friendly
+#   foxtail up <name> [port]                  start + log in (TS_AUTHKEY=tskey-... skips the browser)
+#   foxtail down <name>                       stop the daemon, keep the login
+#   foxtail <name> [cmd…]                     run cmd on that tailnet: ssh scp sftp rsync git curl et open vnc://; no cmd = proxied shell
+#   foxtail exec <name> cmd…                  run cmd with the proxy env and ssh routed through that tailnet
+#   foxtail ssh <name> host                   ssh to a node (same as: foxtail <name> ssh host)
+#   foxtail et [opts] [user@]host.<name>      et through the host's tailnet; any other host goes to plain et
+#   foxtail open vnc://host.<name>            screen sharing through the host's tailnet; any other URL goes to plain open
+#   foxtail forward <name> host L:R           expose a node's port on 127.0.0.1 for apps that ignore proxies (no ssh needed)
+#   foxtail nc [name] host port               raw pipe to host:port through a tailnet (ssh ProxyCommand)
+#   foxtail owns <host>                       exit 0 and print the tailnet if host is on one (ssh Match exec)
+#   foxtail init [--et] [--vnc]               opt-in shell functions: eval "$(foxtail init --et --vnc)"
+#   foxtail rm <name>                         stop and delete its state
+#   foxtail enable <name>                     start at login (launchd), restart on crash
+#   foxtail disable <name>                    stop starting at login
+#   foxtail doctor                            check this machine's setup, daemons and ssh config
+#   foxtail selftest                          assert foxtail's own helpers still work
 
 set -euo pipefail
 
@@ -207,7 +200,7 @@ cmd_ls() {
     local url nodes
     url=$(tailscale debug prefs 2>/dev/null | sed -n 's/.*"ControlURL": "\(.*\)".*/\1/p' | head -1)
     nodes=$(tailscale status 2>/dev/null | grep -c '^1' || true)
-    printf '%-14s %-6s %-10s %-5s %-28s %s\n' '(GUI app)' native native app "${url#https://}" "$nodes"
+    printf '%-14s %-6s %-10s %-5s %-28s %s\n' '(native)' - native app "${url#https://}" "$nodes"
   fi
   local n p state url nodes auto
   for n in $(names); do
@@ -249,12 +242,14 @@ NODE_JQ='
       (if .ID == $self then "self" else "" end)
     ] | @tsv'
 
-print_rows() {  # stdin = TSV rows
+# One self-contained line per node, tailnet first, so `foxtail nodes | grep x`
+# says which tailnet x is on.
+NODE_FMT='%-12s %-38s %-15s %-6s %-13s %s\n'
+print_rows() {  # tailnet; stdin = TSV rows
   local host ip os state link me
   while IFS=$'\t' read -r host ip os state link me; do
     [ -n "$host" ] || continue
-    printf '  %-38s %-15s %-6s %-13s %s%s\n' \
-      "$host" "$ip" "$os" "$state" "$link" "${me:+  ← this Mac}"
+    printf "$NODE_FMT" "$1" "$host" "$ip" "$os" "$state" "$link${me:+  ← this Mac}"
   done
 }
 
@@ -265,14 +260,13 @@ cmd_nodes() {
     [ -d "$(dir "$want")" ] || die "no such tailnet: $want (try: foxtail ls)"
   fi
   need jq
-  printf '  %-38s %-15s %-6s %-13s %s\n' NODE IP OS STATE LINK
+  printf "$NODE_FMT" TAILNET NODE IP OS STATE LINK
 
   local shown=0 json self n
   if [ -z "$want" ] && pgrep -qf 'io.tailscale.ipn.macsys.network-extension'; then
     if json=$(tailscale status --json 2>/dev/null) && [ -n "$json" ]; then
       self=$(printf '%s' "$json" | jq -r '.Self.ID // ""')
-      printf '\n%s (native) — %s\n' "(GUI app)" "$(tailscale debug prefs 2>/dev/null | sed -n 's/.*"ControlURL": "https:\/\/\(.*\)".*/\1/p' | head -1)"
-      printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows
+      printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows '(native)'
       shown=1
     fi
   fi
@@ -286,12 +280,10 @@ cmd_nodes() {
     json=$(ts "$n" status --json 2>/dev/null) || continue
     printf '%s' "$json" | jq -e '.Self.ID' >/dev/null 2>&1 || continue
     self=$(printf '%s' "$json" | jq -r '.Self.ID // ""')
-    [ "$shown" = 1 ] && echo
-    printf '%s (port %s) — %s\n' "$n" "$(port "$n")" "$(account "$n")"
-    printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows
+    printf '%s' "$json" | jq -r --arg self "$self" "$NODE_JQ" | print_rows "$n"
     shown=1
   done
-  [ "$shown" = 1 ] || echo "  no tailnet is up"
+  [ "$shown" = 1 ] || echo "no tailnet is up" >&2
 }
 
 cmd_up() {
@@ -729,6 +721,10 @@ cmd_selftest() {
 
   d=$(label work); [ "$d" = "com.foxtail.work" ] || { echo "FAIL label: $d"; return 1; }
   d=$(plist work); [ "$d" = "$HOME/Library/LaunchAgents/com.foxtail.work.plist" ] || { echo "FAIL plist: $d"; return 1; }
+
+  # help stays one line per command, so `foxtail --help | grep x` shows whole entries
+  d=$(awk 'NR>1 && /^#/ {print; next} NR>1 {exit}' "$0" | grep -c '^#     *[^ f]' || true)
+  [ "$d" = 0 ] || { echo "FAIL help has $d continuation line(s)"; return 1; }
 
   echo "selftest ok"
 }

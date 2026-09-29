@@ -25,7 +25,7 @@ tailnet fully native; every *additional* tailnet runs as an isolated userspace
 ```console
 $ foxtail ls
 NAME           PORT   STATE      TAILNET/ACCOUNT              NODES
-(GUI app)      native native     lab.example.com              4
+(native)       -      native     lab.example.com              4
 work           1056   up         me@work.example              7
 personal       1055   up         me@personal.example          6
 
@@ -70,12 +70,14 @@ ephemeral port and never collides with the GUI app's `41641`.
 ## Install
 
 ```sh
-brew tap michaelcereda/foxtail https://github.com/MichaelCereda/foxtail
-brew install michaelcereda/foxtail/foxtail
+brew install michaelcereda/tap/foxtail
 ```
 
-The formula name has to be fully qualified. Homebrew refuses to resolve a bare
-`brew install foxtail` from a third-party tap.
+That taps [michaelcereda/homebrew-tap](https://github.com/MichaelCereda/homebrew-tap)
+and installs in one step; `brew upgrade` picks up new releases from then on.
+
+If you installed an earlier version with `brew tap michaelcereda/foxtail …`,
+`brew update` moves it to the new tap for you.
 
 Or from a clone:
 
@@ -158,25 +160,28 @@ every tailnet you are connected to, in one table:
 
 ```console
 $ foxtail nodes
-  NODE                                   IP              OS     STATE         LINK
+TAILNET      NODE                                   IP              OS     STATE         LINK
+(native)     fileserver.hq.example                  100.64.0.1      linux  online        idle
+(native)     laptop.hq.example                      100.64.0.4      macOS  online        -  ← this Mac
+work         build-box.tail0a1b2c.ts.net            100.81.10.48    linux  online        relay nyc
+work         git.tail0a1b2c.ts.net                  100.125.10.78   linux  online        idle
+work         old-laptop.tail0a1b2c.ts.net           100.96.10.19    macOS  offline 08-20 -
+personal     nas.tail3d4e5f.ts.net                  100.98.14.22    macOS  online        direct 192.168.1.50
+personal     phone.tail3d4e5f.ts.net                100.65.10.92    iOS    online        idle
+```
 
-(GUI app) (native) — headscale.example.com
-  fileserver.hq.example                  100.64.0.1      linux  online        idle
-  laptop.hq.example                      100.64.0.4      macOS  online        -  ← this Mac
+Every line stands on its own, with the tailnet first, so it greps cleanly:
 
-work (port 1056) — me@work.example
-  build-box.tail0a1b2c.ts.net            100.81.10.48    linux  online        relay nyc
-  git.tail0a1b2c.ts.net                  100.125.10.78   linux  online        idle
-  old-laptop.tail0a1b2c.ts.net           100.96.10.19    macOS  offline 08-20 -
-
-personal (port 1055) — me@personal.example
-  nas.tail3d4e5f.ts.net                  100.98.14.22    macOS  online        direct 192.168.1.50
-  phone.tail3d4e5f.ts.net                100.65.10.92    iOS    online        idle
+```console
+$ foxtail nodes | grep build-box
+work         build-box.tail0a1b2c.ts.net            100.81.10.48    linux  online        relay nyc
 ```
 
 Names are printed in full so they can be copied straight into `foxtail ssh` or a
-browser. Each group is headed by the tailnet, its proxy port and the account
-that owns it.
+browser. `foxtail ls` shows each tailnet's proxy port and owning account.
+
+`foxtail --help` is one line per command for the same reason:
+`foxtail --help | grep vnc` shows every entry that mentions it.
 
 `LINK` reports only connections that are actually up — `direct` with the peer's
 address when the connection is peer-to-peer, `relay <region>` when it is going
@@ -370,12 +375,10 @@ and copy the full one:
 
 ```console
 $ foxtail nodes personal
-  NODE                                   IP              OS     STATE         LINK
-
-personal (port 1055) — me@personal.example
-  mac-mini.tail3d4e5f.ts.net             100.98.14.22    macOS  online        idle
-  nas.tail3d4e5f.ts.net                  100.124.10.50   linux  online        idle
-  phone.tail3d4e5f.ts.net                100.65.10.92    iOS    online        idle
+TAILNET      NODE                                   IP              OS     STATE         LINK
+personal     mac-mini.tail3d4e5f.ts.net             100.98.14.22    macOS  online        idle
+personal     nas.tail3d4e5f.ts.net                  100.124.10.50   linux  online        idle
+personal     phone.tail3d4e5f.ts.net                100.65.10.92    iOS    online        idle
 ```
 
 A shell is immediate — `ssh` is proxy-aware once foxtail wraps it, and MagicDNS
@@ -424,7 +427,7 @@ work enabled — starts at login on port 1056, restarts if it crashes
 
 $ foxtail ls
 NAME           PORT   STATE      AUTO  TAILNET/ACCOUNT              NODES
-(GUI app)      native native     app   lab.example.com              4
+(native)       -      native     app   lab.example.com              4
 work           1056   up         yes   me@work.example              7
 ```
 
@@ -534,7 +537,7 @@ delete the node in that tailnet's admin console, then re-run with `TS_AUTHKEY`.
 one socket deadlock each other. `foxtail up` clears them before logging in; if
 you were driving `tailscale` by hand, `pkill -f "socket=.*<name>"` first.
 
-**`foxtail ls` shows an unexpected tailnet on the `(GUI app)` row.** Something
+**`foxtail ls` shows an unexpected tailnet on the `(native)` row.** Something
 switched the GUI app's profile. `tailscale switch --list`, then
 `tailscale switch <id>` to put it back. To stop it happening, log the GUI app
 out of the profiles `foxtail` manages so they can't be selected there.
