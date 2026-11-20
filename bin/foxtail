@@ -218,20 +218,25 @@ cmd_ls() {
   # Profiles added in Tailscale.app that no foxtail daemon covers. Matched on
   # login name read from each daemon's state file, so stopped ones count too.
   # ponytail: parses `switch --list` text; switch to JSON if tailscale adds it
-  local mine id tailnet acct
+  local mine id tailnet acct sug
   mine=$(for n in $(names); do state_account "$n"; done)
   while read -r id tailnet acct; do
     case $acct in *'*') continue ;; esac   # the active (native) profile
     printf '%s\n' "$mine" | grep -qxF -- "$acct" && continue
-    printf '%-14s %-6s %-10s %-5s %-28s %s\n' "$(suggest_name "$tailnet")" - not-added - "$acct" -
+    sug=$(suggest_name "$tailnet")
+    if [ -d "$(dir "$sug")" ]; then
+      [ -n "$(state_account "$sug")" ] || continue   # added under that name, not logged in yet
+      sug='<name>'                                    # name taken by another account
+    fi
+    printf '%-14s %-6s %-10s %-5s %-28s %s\n' "$sug" - not-added - "$acct" -
   done < <(tailscale switch --list 2>/dev/null | tail -n +2)
 }
 
 # name to pass to `foxtail up` for an app profile: acme.example -> acme,
-# me@example.com -> me. <name> when that would be invalid, a command, or taken.
+# me@example.com -> me. <name> when that would be invalid or a command.
 suggest_name() {
   local t=${1%%@*}; t=${t%%.*}; t=$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')
-  if valid_name "$t" && ! reserved "$t" && [ ! -d "$(dir "$t")" ]; then printf '%s' "$t"
+  if valid_name "$t" && ! reserved "$t"; then printf '%s' "$t"
   else printf '<name>'; fi
 }
 
