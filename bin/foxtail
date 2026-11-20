@@ -223,8 +223,16 @@ cmd_ls() {
   while read -r id tailnet acct; do
     case $acct in *'*') continue ;; esac   # the active (native) profile
     printf '%s\n' "$mine" | grep -qxF -- "$acct" && continue
-    printf '%-14s %-6s %-10s %-5s %-28s %s\n' '(app)' - app-only - "$acct" -
+    printf '%-14s %-6s %-10s %-5s %-28s %s\n' "$(suggest_name "$tailnet")" - not-added - "$acct" -
   done < <(tailscale switch --list 2>/dev/null | tail -n +2)
+}
+
+# name to pass to `foxtail up` for an app profile: acme.example -> acme,
+# me@example.com -> me. <name> when that would be invalid, a command, or taken.
+suggest_name() {
+  local t=${1%%@*}; t=${t%%.*}; t=$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')
+  if valid_name "$t" && ! reserved "$t" && [ ! -d "$(dir "$t")" ]; then printf '%s' "$t"
+  else printf '<name>'; fi
 }
 
 # login name of a tailnet's daemon, read from its state file (works when stopped)
@@ -711,6 +719,10 @@ cmd_selftest() {
   for bad_ in "" "." ".." "../evil" "a/b" "-lead" "*" "a b" '$(x)'; do
     valid_name "$bad_" && { echo "FAIL accepted invalid name: '$bad_'"; return 1; }
   done
+
+  d=$(suggest_name Acme.example);     [ "$d" = acme ]       || { echo "FAIL suggest_name: $d"; return 1; }
+  d=$(suggest_name me@example.com);    [ "$d" = me ]         || { echo "FAIL suggest_name @: $d"; return 1; }
+  d=$(suggest_name open.example.com); [ "$d" = '<name>' ]  || { echo "FAIL suggest_name reserved: $d"; return 1; }
 
   d=$(freeport); [ "$d" -ge 1055 ] 2>/dev/null || { echo "FAIL freeport: $d"; return 1; }
   d=$(freeport 5901); [ "$d" -ge 5901 ] 2>/dev/null || { echo "FAIL freeport 5901: $d"; return 1; }

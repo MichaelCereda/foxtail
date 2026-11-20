@@ -139,7 +139,7 @@ foxtail selftest              # assert foxtail's own helpers still work
 
 | Command | What it does |
 | --- | --- |
-| `ls` | Table of the native tailnet plus every managed one: port, state, owning account, node count. Profiles added in Tailscale.app that no foxtail tailnet covers show as `app-only` rows |
+| `ls` | Table of the native tailnet plus every managed one: port, state, owning account, node count. Profiles added in Tailscale.app that no foxtail tailnet covers show as `not-added` rows, named with a suggestion for `foxtail up <name>` |
 | `nodes [name]` | Every node on every tailnet (or just one): name, Tailscale IP, OS, reachability, and whether the link is direct or relayed |
 | `up <name> [port]` | Starts a userspace daemon and logs in. Picks the lowest free port from 1055 if you don't name one. Names that clash with a foxtail command (`ls`, `nc`, …) are refused |
 | `down <name>` | Stops the daemon. The login survives, so `up` reconnects without re-authenticating |
@@ -550,9 +550,10 @@ switched the GUI app's profile. `tailscale switch --list`, then
 `tailscale switch <id>` to put it back. To stop it happening, log the GUI app
 out of the profiles `foxtail` manages so they can't be selected there.
 
-**A profile added in Tailscale.app shows as `app-only` in `foxtail ls`.** It is
+**A profile added in Tailscale.app shows as `not-added` in `foxtail ls`.** It is
 in the app but no foxtail daemon runs it. A foxtail tailnet is a separate node
-with its own login, so it cannot borrow the app's: `foxtail up <name>` once.
+with its own login, so it cannot borrow the app's: run `foxtail up` once with
+the name in that row (or any name you prefer).
 
 **`ping node.tailXXXX.ts.net` or `host node.tailXXXX.ts.net` says NXDOMAIN.**
 Expected. An extra tailnet's names exist only inside its daemon — nothing is
