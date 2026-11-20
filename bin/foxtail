@@ -218,15 +218,13 @@ cmd_ls() {
   # Profiles added in Tailscale.app that no foxtail daemon covers. Matched on
   # login name read from each daemon's state file, so stopped ones count too.
   # ponytail: parses `switch --list` text; switch to JSON if tailscale adds it
-  local mine id tailnet acct extra=0
+  local mine id tailnet acct
   mine=$(for n in $(names); do state_account "$n"; done)
   while read -r id tailnet acct; do
     case $acct in *'*') continue ;; esac   # the active (native) profile
     printf '%s\n' "$mine" | grep -qxF -- "$acct" && continue
     printf '%-14s %-6s %-10s %-5s %-28s %s\n' '(app)' - app-only - "$acct" -
-    extra=1
   done < <(tailscale switch --list 2>/dev/null | tail -n +2)
-  [ $extra = 0 ] || echo "app-only: in Tailscale.app but not foxtail — add with: foxtail up <name>" >&2
 }
 
 # login name of a tailnet's daemon, read from its state file (works when stopped)
