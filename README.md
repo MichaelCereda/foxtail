@@ -371,6 +371,9 @@ there is for tailnets.
 
 Note that macOS Screen Sharing also advertises UDP 3283 for Apple Remote
 Desktop; that will not work, but plain VNC on 5900 is all Screen Sharing needs.
+High Performance mode will not work either: it streams over UDP 5900–5902,
+and a forward carries TCP only. Use Standard mode, or put that tailnet on the
+GUI app if you need High Performance.
 
 ### Worked example: a shell and a screen on a machine you cannot route to
 
